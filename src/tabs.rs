@@ -1,27 +1,16 @@
-use crate::engine::{WebEngine, servo::ServoEngine};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EngineKind {
-    #[default]
-    Servo,
-}
+use crate::engine::{servo::ServoEngine, WebEngine};
 
 pub struct Tab {
     pub id: usize,
     pub engine: Box<dyn WebEngine>,
-    pub kind: EngineKind,
 }
 
 impl Tab {
     pub fn new(id: usize, url: &str) -> Self {
-        Self::new_with_engine(id, url, EngineKind::default())
-    }
-
-    pub fn new_with_engine(id: usize, url: &str, kind: EngineKind) -> Self {
-        let engine: Box<dyn WebEngine> = match kind {
-            EngineKind::Servo => Box::new(ServoEngine::new(url)),
-        };
-        Self { id, engine, kind }
+        Self {
+            id,
+            engine: Box::new(ServoEngine::new(url)),
+        }
     }
 
     pub fn title(&self) -> &str {
@@ -45,21 +34,15 @@ pub struct TabManager {
     tabs: Vec<Tab>,
     active_index: usize,
     next_id: usize,
-    default_engine: EngineKind,
 }
 
 impl TabManager {
     pub fn new(initial_url: &str) -> Self {
-        Self::new_with_engine(initial_url, EngineKind::default())
-    }
-
-    pub fn new_with_engine(initial_url: &str, default_engine: EngineKind) -> Self {
-        let first_tab = Tab::new_with_engine(1, initial_url, default_engine);
+        let first_tab = Tab::new(1, initial_url);
         Self {
             tabs: vec![first_tab],
             active_index: 0,
             next_id: 2,
-            default_engine,
         }
     }
 
@@ -87,27 +70,6 @@ impl TabManager {
         self.tabs[self.active_index].engine.as_mut()
     }
 
-    pub fn default_engine(&self) -> EngineKind {
-        self.default_engine
-    }
-
-    pub fn set_default_engine(&mut self, kind: EngineKind) {
-        self.default_engine = kind;
-    }
-
-    pub fn active_engine_kind(&self) -> EngineKind {
-        self.tabs[self.active_index].kind
-    }
-
-    pub fn switch_active_engine(&mut self, kind: EngineKind) {
-        let id = self.tabs[self.active_index].id;
-        let uri = self.tabs[self.active_index].uri().to_string();
-        self.tabs[self.active_index].engine.deactivate();
-        let mut new_tab = Tab::new_with_engine(id, &uri, kind);
-        new_tab.engine.activate();
-        self.tabs[self.active_index] = new_tab;
-    }
-
     pub fn resize_all(&mut self, width: u32, height: u32) {
         for tab in &mut self.tabs {
             tab.engine.resize(width, height);
@@ -115,10 +77,6 @@ impl TabManager {
     }
 
     pub fn new_tab(&mut self, url: &str) -> usize {
-        self.new_tab_with_engine(url, self.default_engine)
-    }
-
-    pub fn new_tab_with_engine(&mut self, url: &str, kind: EngineKind) -> usize {
         let id = self.next_id;
         self.next_id += 1;
         let old_idx = self.active_index;
@@ -128,7 +86,7 @@ impl TabManager {
         } else {
             (1280, 784)
         };
-        let mut new_tab = Tab::new_with_engine(id, url, kind);
+        let mut new_tab = Tab::new(id, url);
         new_tab.engine.resize(current_size.0, current_size.1);
         new_tab.engine.activate();
         self.tabs.push(new_tab);
@@ -216,30 +174,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tab_manager_with_engine_kind() {
-        let mut mgr = TabManager::new_with_engine("about:neoweb", EngineKind::Servo);
+    fn test_tab_manager_lifecycle() {
+        let mut mgr = TabManager::new("about:neoweb");
         assert_eq!(mgr.len(), 1);
-        assert_eq!(mgr.active_engine_kind(), EngineKind::Servo);
         assert_eq!(mgr.active_tab().title(), "Neoweb - Home");
 
         // Add a new tab
-        let idx = mgr.new_tab_with_engine("about:blank", EngineKind::Servo);
+        let idx = mgr.new_tab("about:blank");
         assert_eq!(idx, 1);
         assert_eq!(mgr.len(), 2);
-        assert_eq!(mgr.active_engine_kind(), EngineKind::Servo);
         assert_eq!(mgr.active_tab().title(), "Blank Page");
 
-        // Switch active tab engine
-        mgr.switch_active_engine(EngineKind::Servo);
-        assert_eq!(mgr.active_engine_kind(), EngineKind::Servo);
-        assert_eq!(mgr.active_tab().title(), "Blank Page");
-    }
+        // Navigate between tabs
+        mgr.prev_tab();
+        assert_eq!(mgr.active_index(), 0);
+        assert_eq!(mgr.active_tab().title(), "Neoweb - Home");
 
-    #[test]
-    fn test_engine_kind_default() {
-        assert_eq!(EngineKind::default(), EngineKind::Servo);
-        let mgr = TabManager::new("about:neoweb");
-        assert_eq!(mgr.active_engine_kind(), EngineKind::Servo);
+        mgr.next_tab();
+        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_tab().title(), "Blank Page");
     }
 
     #[test]
