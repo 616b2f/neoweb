@@ -122,16 +122,16 @@ impl UserData for LuaWindow {
         });
 
         methods.add_method("set_mode", |lua, this, mode: String| {
-            let code = format!(
-                r#"
+            let code = r#"
+                local mode = ...
                 local modes = package.loaded["modes"]
-                if modes and modes.get_mode and modes.get_mode() ~= "{}" then
-                    modes.set_mode(nil, "{}")
+                if modes and modes.get_mode and modes.get_mode() ~= mode then
+                    modes.set_mode(nil, mode)
                 end
-                "#,
-                mode, mode
-            );
-            let _ = lua.load(&code).exec();
+            "#;
+            if let Ok(func) = lua.load(code).into_function() {
+                let _ = func.call::<()>(mode.as_str());
+            }
             this.sender.send(LuaToRustMsg::SetMode(mode));
             Ok(())
         });
@@ -650,42 +650,50 @@ impl LuaRuntime {
     }
 
     pub fn sync_state(&self, uri: &str, title: &str, progress: f32) {
-        if let Ok(mut u) = self.window_proxy.uri.lock() {
+        if let Ok(mut u) = self.window_proxy.uri.lock()
+            && *u != uri
+        {
             *u = uri.to_string();
         }
-        if let Ok(mut t) = self.window_proxy.title.lock() {
+        if let Ok(mut t) = self.window_proxy.title.lock()
+            && *t != title
+        {
             *t = title.to_string();
         }
-        if let Ok(mut p) = self.window_proxy.progress.lock() {
+        if let Ok(mut p) = self.window_proxy.progress.lock()
+            && (*p - progress).abs() > 0.001
+        {
             *p = progress;
         }
     }
 
     pub fn emit_signal(&self, signal_name: &str, arg: &str) {
-        let code = format!(
-            r#"
+        let code = r#"
+            local name, val = ...
             local lousy = package.loaded["lousy"] or package.loaded["lib.lousy"]
             if lousy and lousy.signal then
-                lousy.signal.emit("{}", w, "{}")
+                lousy.signal.emit(name, w, val)
             end
-            "#,
-            signal_name, arg
-        );
-        let _ = self.lua.load(&code).exec();
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            let _ = func.call::<()>((signal_name, arg));
+        }
     }
 
     pub fn handle_key(&self, key_str: &str) -> bool {
-        let code = format!(
-            r#"
+        let code = r#"
+            local key = ...
             local modes = package.loaded["modes"] or require("modes")
             if modes and modes.handle_key then
-                return modes.handle_key(w, "{}") or false
+                return modes.handle_key(w, key) or false
             end
             return false
-            "#,
-            key_str.replace('\\', "\\\\").replace('"', "\\\"")
-        );
-        self.lua.load(&code).eval::<bool>().unwrap_or(false)
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            func.call::<bool>(key_str).unwrap_or(false)
+        } else {
+            false
+        }
     }
 
     pub fn get_key_buffer(&self) -> String {
@@ -725,16 +733,16 @@ impl LuaRuntime {
     }
 
     pub fn set_mode(&self, mode: &str) {
-        let code = format!(
-            r#"
+        let code = r#"
+            local mode = ...
             local modes = package.loaded["modes"]
             if modes and modes.set_mode then
-                modes.set_mode(w, "{}")
+                modes.set_mode(w, mode)
             end
-            "#,
-            mode
-        );
-        let _ = self.lua.load(&code).exec();
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            let _ = func.call::<()>(mode);
+        }
     }
 
     pub fn is_passthrough_mode(&self) -> bool {
@@ -860,16 +868,16 @@ impl LuaRuntime {
     }
 
     pub fn invoke_ui_callback(&self, callback_id: usize) {
-        let code = format!(
-            r#"
+        let code = r#"
+            local id = ...
             local ui = package.loaded["ui"] or require("ui")
             if ui and ui.invoke_callback then
-                ui.invoke_callback({})
+                ui.invoke_callback(id)
             end
-            "#,
-            callback_id
-        );
-        let _ = self.lua.load(&code).exec();
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            let _ = func.call::<()>(callback_id);
+        }
     }
 
     pub fn get_completion_view(&self) -> Option<crate::ui::lua_view::LuaUiNode> {
@@ -1066,6 +1074,30 @@ impl LuaRuntime {
             end
         "#;
         let _ = self.lua.load(code).exec();
+    }
+
+    /// Query mandatory tab strip height from Lua without fallback.
+    pub fn get_tab_strip_height(&self) -> f32 {
+        let code = r#"
+            local ui = package.loaded["ui"] or require("ui")
+            return ui.get_tab_strip_height()
+        "#;
+        self.lua
+            .load(code)
+            .eval::<f32>()
+            .expect("ui.tabs: get_height() must return tab strip height from Lua")
+    }
+
+    /// Query mandatory bottom bar height from Lua without fallback.
+    pub fn get_bottom_bar_height(&self) -> f32 {
+        let code = r#"
+            local ui = package.loaded["ui"] or require("ui")
+            return ui.get_bottom_bar_height()
+        "#;
+        self.lua
+            .load(code)
+            .eval::<f32>()
+            .expect("ui.status: get_height() must return bottom bar height from Lua")
     }
 
     pub fn eval_lua(&self, code: &str) -> Result<String, String> {
@@ -1866,6 +1898,38 @@ mod tests {
 
         runtime.set_mode("normal");
         assert!(runtime.get_prompt_view().is_none());
+
+        // 8. Test mandatory dynamic tab strip height and bottom bar height without fallback
+        assert_eq!(runtime.get_tab_strip_height(), 28.0);
+        assert_eq!(runtime.get_bottom_bar_height(), 28.0);
+
+        runtime
+            .lua
+            .load("require('ui.tabs').set_height(35)")
+            .exec()
+            .unwrap();
+        assert_eq!(runtime.get_tab_strip_height(), 35.0);
+
+        runtime
+            .lua
+            .load("require('ui.tabs').set_height(28)")
+            .exec()
+            .unwrap();
+        assert_eq!(runtime.get_tab_strip_height(), 28.0);
+
+        runtime
+            .lua
+            .load("require('ui.status').set_height(32)")
+            .exec()
+            .unwrap();
+        assert_eq!(runtime.get_bottom_bar_height(), 32.0);
+
+        runtime
+            .lua
+            .load("require('ui.status').set_height(28)")
+            .exec()
+            .unwrap();
+        assert_eq!(runtime.get_bottom_bar_height(), 28.0);
 
         tab_mgr.close_all();
         let _ = std::fs::remove_dir_all(&temp_dir);

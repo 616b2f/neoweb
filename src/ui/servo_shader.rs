@@ -1,6 +1,6 @@
 use crate::engine::RenderFrame;
 use iced::wgpu;
-use iced::widget::shader::{Pipeline, Primitive, Program, Shader, Viewport};
+use iced::widget::shader::{Action, Pipeline, Primitive, Program, Shader, Viewport};
 use iced::{Element, Length, Rectangle, mouse};
 use std::sync::Arc;
 
@@ -265,19 +265,44 @@ impl Primitive for ServoTexturePrimitive {
     }
 }
 
-pub struct ServoShaderProgram {
-    frame: Option<RenderFrame>,
+#[derive(Debug, Default)]
+pub struct ServoShaderState {
+    pub bounds: Option<Rectangle>,
 }
 
-impl ServoShaderProgram {
-    pub fn new(frame: Option<RenderFrame>) -> Self {
-        Self { frame }
+pub struct ServoShaderProgram<Message> {
+    frame: Option<RenderFrame>,
+    on_bounds: Option<fn(Rectangle) -> Message>,
+}
+
+impl<Message> ServoShaderProgram<Message> {
+    pub fn new(
+        frame: Option<RenderFrame>,
+        on_bounds: Option<fn(Rectangle) -> Message>,
+    ) -> Self {
+        Self { frame, on_bounds }
     }
 }
 
-impl<Message> Program<Message> for ServoShaderProgram {
-    type State = ();
+impl<Message: 'static> Program<Message> for ServoShaderProgram<Message> {
+    type State = ServoShaderState;
     type Primitive = ServoTexturePrimitive;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        _event: &iced::Event,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<Action<Message>> {
+        if state.bounds != Some(bounds) {
+            state.bounds = Some(bounds);
+            if let Some(on_bounds) = self.on_bounds {
+                return Some(Action::publish(on_bounds(bounds)));
+            }
+        }
+        None
+    }
 
     fn draw(
         &self,
@@ -303,8 +328,9 @@ impl<Message> Program<Message> for ServoShaderProgram {
 
 pub fn view_servo_texture<'a, Message: 'static>(
     frame: Option<&RenderFrame>,
+    on_bounds: Option<fn(Rectangle) -> Message>,
 ) -> Element<'a, Message> {
-    Shader::new(ServoShaderProgram::new(frame.cloned()))
+    Shader::new(ServoShaderProgram::new(frame.cloned(), on_bounds))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()

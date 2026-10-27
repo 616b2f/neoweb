@@ -161,4 +161,18 @@ function _M.render_prompt(data, w)
     return prompt_mod.build(data, w)
 end
 
+--- Query mandatory tab strip height from ui.tabs without fallback
+function _M.get_tab_strip_height()
+    local tabs_mod = package.loaded["ui.tabs"] or require("ui.tabs")
+    assert(tabs_mod and tabs_mod.get_height, "ui.tabs module must export get_height")
+    return tabs_mod.get_height()
+end
+
+--- Query mandatory bottom bar height from ui.status without fallback
+function _M.get_bottom_bar_height()
+    local status_mod = package.loaded["ui.status"] or require("ui.status")
+    assert(status_mod and status_mod.get_height, "ui.status module must export get_height")
+    return status_mod.get_height()
+end
+
 return _M

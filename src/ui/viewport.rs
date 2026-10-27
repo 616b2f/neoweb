@@ -60,9 +60,12 @@ pub fn view_viewport<'a, Message: Clone + 'static>(
     is_follow_mode: bool,
     hints: Vec<HintItem>,
     hint_query: &str,
+    on_bounds: Option<fn(iced::Rectangle) -> Message>,
 ) -> Element<'a, Message> {
-    if let Some(frame) = engine.render_frame() {
-        let servo_elem = crate::ui::servo_shader::view_servo_texture(Some(&frame));
+    let frame_opt = engine.render_frame();
+    let servo_elem = crate::ui::servo_shader::view_servo_texture(frame_opt.as_ref(), on_bounds);
+
+    if let Some(_frame) = frame_opt {
         if is_follow_mode && !hints.is_empty() {
             let overlay = iced::widget::canvas(HintCanvasOverlay {
                 hints,
@@ -73,17 +76,18 @@ pub fn view_viewport<'a, Message: Clone + 'static>(
 
             return iced::widget::stack![servo_elem, overlay].into();
         }
-        return servo_elem;
-    }
+        servo_elem
+    } else {
+        let connecting = container(
+            text(format!("Connecting to {}...", engine.uri()))
+                .size(16)
+                .color(FG_MUTED),
+        )
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
-    container(
-        text(format!("Connecting to {}...", engine.uri()))
-            .size(16)
-            .color(FG_MUTED),
-    )
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+        iced::widget::stack![servo_elem, connecting].into()
+    }
 }

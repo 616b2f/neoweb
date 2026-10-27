@@ -5,6 +5,21 @@ local ui = require("ui")
 
 local _M = {}
 
+_M.HEIGHT = 28
+
+--- Get tab strip height in pixels
+function _M.get_height()
+    assert(_M.HEIGHT, "ui.tabs: HEIGHT must be defined")
+    return _M.HEIGHT
+end
+
+--- Set tab strip height in pixels
+function _M.set_height(height)
+    local h = tonumber(height)
+    assert(h and h > 0, "ui.tabs: height must be a positive number")
+    _M.HEIGHT = h
+end
+
 local function utf8_len(str)
     if not str then return 0 end
     local count = 0
@@ -56,6 +71,7 @@ function _M.build(data, w)
     w = w or _G.w
     data = data or {}
     _M.current = data
+    local tab_height = _M.get_height()
     local active_idx = data.active_index or 1
     local tabs = data.tabs or {}
     local num_tabs = math.max(1, #tabs)
@@ -137,11 +153,11 @@ function _M.build(data, w)
                 fav_widget,
                 ui.space({ width = 6 }),
                 title_text,
-            }, { spacing = 0, align = "center", width = "fill", height = 28 }),
+            }, { spacing = 0, align = "center", width = "fill", height = tab_height }),
             {
                 padding = { 0, 0 },
                 width = "fill",
-                height = 28,
+                height = tab_height,
                 style = "none",
                 on_press = function ()
                     if w and w.goto_tab then
@@ -183,24 +199,24 @@ function _M.build(data, w)
             spacing = inner_spacing,
             align = "center",
             width = "fill",
-            height = 28,
+            height = tab_height,
         })
 
         local tab_pill = ui.container(tab_inner, {
             padding = { 0, 8 },
             width = "fill",
-            height = 28,
+            height = tab_height,
             style = is_active and "tab_active" or "tab_inactive",
         })
 
         table.insert(tab_items, tab_pill)
     end
 
-    local row = ui.row(tab_items, { spacing = 0, align = "center", width = "fill", height = 28 })
+    local row = ui.row(tab_items, { spacing = 0, align = "center", width = "fill", height = tab_height })
     return ui.container(row, {
         padding = 0,
         width = "fill",
-        height = 28,
+        height = tab_height,
         style = "tab_strip",
     })
 end

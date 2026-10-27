@@ -5,6 +5,21 @@ local ui = require("ui")
 
 local _M = {}
 
+_M.HEIGHT = 28
+
+--- Get status bar height in pixels
+function _M.get_height()
+    assert(_M.HEIGHT, "ui.status: HEIGHT must be defined")
+    return _M.HEIGHT
+end
+
+--- Set status bar height in pixels
+function _M.set_height(height)
+    local h = tonumber(height)
+    assert(h and h > 0, "ui.status: height must be a positive number")
+    _M.HEIGHT = h
+end
+
 local mode_badges = {
     ["normal"] = { "NORMAL", "green" },
     ["command"] = { "COMMAND", "yellow" },
@@ -101,6 +116,7 @@ function _M.build(data, w)
     return ui.container(full_row, {
         padding = { 4, 8 },
         width = "fill",
+        height = _M.get_height(),
         style = "status_bar",
     })
 end

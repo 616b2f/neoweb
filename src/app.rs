@@ -24,6 +24,7 @@ pub enum Message {
     NavigateUrl(String),
     ClearNotification,
     LuaUiCallback(usize),
+    ViewportBoundsChanged(iced::Rectangle),
 }
 
 pub struct NeowebApp {
@@ -36,6 +37,7 @@ pub struct NeowebApp {
     pub tick_count: usize,
     pub cursor_position: iced::Point,
     pub window_width: f32,
+    pub viewport_bounds: iced::Rectangle,
 }
 
 impl NeowebApp {
@@ -83,6 +85,14 @@ impl NeowebApp {
 
         lua_runtime.load_init_script();
 
+        let tab_strip_h = lua_runtime.get_tab_strip_height();
+        let bottom_bar_h = lua_runtime.get_bottom_bar_height();
+        let initial_viewport_h = (840.0 - tab_strip_h - bottom_bar_h).max(100.0);
+        let viewport_bounds = iced::Rectangle::new(
+            iced::Point::new(0.0, tab_strip_h),
+            iced::Size::new(1280.0, initial_viewport_h),
+        );
+
         let mut app = Self {
             tabs,
             storage,
@@ -93,6 +103,7 @@ impl NeowebApp {
             tick_count: 0,
             cursor_position: iced::Point::ORIGIN,
             window_width: 1280.0,
+            viewport_bounds,
         };
 
         let init_task = app.drain_lua_messages();
@@ -132,8 +143,10 @@ impl NeowebApp {
                     Event::Window(iced::window::Event::Resized(size)) => {
                         self.window_width = size.width;
                         let w = size.width.round().max(100.0) as u32;
-                        let h = size.height.round().max(100.0) as u32;
-                        let viewport_h = h.saturating_sub(56).max(100);
+                        let tab_strip_h = self.lua_runtime.get_tab_strip_height();
+                        let bottom_bar_h = self.lua_runtime.get_bottom_bar_height();
+                        let viewport_h =
+                            (size.height - tab_strip_h - bottom_bar_h).round().max(100.0) as u32;
                         self.tabs.resize_all(w, viewport_h);
                     }
                     Event::Window(iced::window::Event::CloseRequested) => {
@@ -148,34 +161,53 @@ impl NeowebApp {
                     }
                     Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                         self.cursor_position = position;
-                        let webview_y = (position.y - 32.0).max(0.0);
+                        let webview_x = position.x - self.viewport_bounds.x;
+                        let webview_y = position.y - self.viewport_bounds.y;
                         self.tabs
                             .active_engine_mut()
-                            .handle_mouse_move(position.x, webview_y);
+                            .handle_mouse_move(webview_x, webview_y);
                     }
-                    Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
-                        let webview_y = (self.cursor_position.y - 32.0).max(0.0);
+                    Event::Mouse(iced::mouse::Event::ButtonPressed(button))
+                        if self.viewport_bounds.contains(self.cursor_position) =>
+                    {
+                        let webview_x = self.cursor_position.x - self.viewport_bounds.x;
+                        let webview_y = self.cursor_position.y - self.viewport_bounds.y;
                         self.tabs
                             .active_engine_mut()
-                            .handle_mouse_button(button, true, self.cursor_position.x, webview_y);
+                            .handle_mouse_button(button, true, webview_x, webview_y);
                     }
                     Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
-                        let webview_y = (self.cursor_position.y - 32.0).max(0.0);
+                        let webview_x = self.cursor_position.x - self.viewport_bounds.x;
+                        let webview_y = self.cursor_position.y - self.viewport_bounds.y;
                         self.tabs
                             .active_engine_mut()
-                            .handle_mouse_button(button, false, self.cursor_position.x, webview_y);
+                            .handle_mouse_button(button, false, webview_x, webview_y);
                     }
-                    Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
+                    Event::Mouse(iced::mouse::Event::WheelScrolled { delta })
+                        if self.viewport_bounds.contains(self.cursor_position) =>
+                    {
                         let (dx, dy) = match delta {
                             iced::mouse::ScrollDelta::Lines { x, y } => (x * 40.0, y * 40.0),
                             iced::mouse::ScrollDelta::Pixels { x, y } => (x, y),
                         };
-                        let webview_y = (self.cursor_position.y - 32.0).max(0.0);
+                        let webview_x = self.cursor_position.x - self.viewport_bounds.x;
+                        let webview_y = self.cursor_position.y - self.viewport_bounds.y;
                         self.tabs
                             .active_engine_mut()
-                            .handle_wheel(dx, dy, self.cursor_position.x, webview_y);
+                            .handle_wheel(dx, dy, webview_x, webview_y);
                     }
                     _ => {}
+                }
+                Task::none()
+            }
+
+            Message::ViewportBoundsChanged(bounds) => {
+                self.viewport_bounds = bounds;
+                let w = bounds.width.round().max(100.0) as u32;
+                let h = bounds.height.round().max(100.0) as u32;
+                let (cur_w, cur_h) = self.tabs.active_engine().viewport_size();
+                if cur_w != w || cur_h != h {
+                    self.tabs.resize_all(w, h);
                 }
                 Task::none()
             }
@@ -222,14 +254,14 @@ impl NeowebApp {
 
         let engine = self.tabs.active_engine_mut();
         let events = engine.poll_events();
-        let uri = engine.uri().to_string();
-        let title = engine.title().to_string();
+        let uri = engine.uri();
+        let title = engine.title();
         let progress = engine.progress();
 
         for ev in events {
             match ev {
                 crate::engine::EngineEvent::TitleChanged(t) => {
-                    self.storage.lock().unwrap().record_history(&uri, &t).ok();
+                    self.storage.lock().unwrap().record_history(uri, &t).ok();
                     self.lua_runtime.emit_signal("property::title", &t);
                 }
                 crate::engine::EngineEvent::UriChanged(u) => {
@@ -255,7 +287,7 @@ impl NeowebApp {
             }
         }
 
-        self.lua_runtime.sync_state(&uri, &title, progress);
+        self.lua_runtime.sync_state(uri, title, progress);
         lua_task
     }
 
@@ -507,6 +539,7 @@ impl NeowebApp {
             is_follow_mode,
             hints,
             &follow_query,
+            Some(Message::ViewportBoundsChanged),
         );
 
         // 3. Status bar (Lua-driven)
@@ -1139,6 +1172,72 @@ mod tests {
         // Session file should have been written by Lua "close" signal
         let session_file = temp_dir.join("session.json");
         assert!(session_file.exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_viewport_bounds_and_mouse_event_dispatch() {
+        let temp_dir = std::env::temp_dir()
+            .join(format!("neoweb_test_mouse_bounds_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
+
+        // 1. Initial viewport bounds has y == tab_strip_height
+        assert_eq!(app.viewport_bounds.x, 0.0);
+        assert_eq!(app.viewport_bounds.y, 28.0);
+        assert_eq!(app.viewport_bounds.width, 1280.0);
+        assert_eq!(app.viewport_bounds.height, 784.0);
+
+        // 2. ViewportBoundsChanged updates bounds and viewport size
+        let custom_bounds = iced::Rectangle::new(
+            iced::Point::new(10.0, 35.0),
+            iced::Size::new(1000.0, 600.0),
+        );
+        let _ = app.update(Message::ViewportBoundsChanged(custom_bounds));
+        assert_eq!(app.viewport_bounds, custom_bounds);
+        let (vw, vh) = app.tabs.active_engine().viewport_size();
+        assert_eq!(vw, 1000);
+        assert_eq!(vh, 600);
+
+        // 3. CursorMoved updates cursor_position
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::CursorMoved {
+                position: iced::Point::new(110.0, 135.0),
+            },
+        )));
+        assert_eq!(app.cursor_position, iced::Point::new(110.0, 135.0));
+
+        // 4. ButtonPressed inside viewport_bounds is processed
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+        )));
+
+        // 5. ButtonPressed outside viewport_bounds (in tab strip, y = 15.0) is rejected
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::CursorMoved {
+                position: iced::Point::new(100.0, 15.0),
+            },
+        )));
+        assert_eq!(app.cursor_position, iced::Point::new(100.0, 15.0));
+        assert!(!app.viewport_bounds.contains(app.cursor_position));
+
+        // ButtonPressed when cursor is at tab strip does not panic and is ignored
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+        )));
+
+        // 6. WheelScrolled outside viewport_bounds is ignored
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::WheelScrolled {
+                delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+            },
+        )));
+
+        // 7. ButtonReleased is always delivered
+        let _ = app.update(Message::EventOccurred(Event::Mouse(
+            iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+        )));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
