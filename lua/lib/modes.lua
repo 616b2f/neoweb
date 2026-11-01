@@ -337,7 +337,7 @@ _M.new_mode("follow", {
     enter = function (w, target)
         prompt_text = ""
         follow_query = ""
-        follow_target = (target == "tab") and "tab" or "current"
+        follow_target = target or "current"
     end,
     leave = function (w)
         prompt_text = ""

@@ -225,6 +225,14 @@ impl UserData for LuaWindow {
         });
 
         methods.add_method(
+            "download",
+            |_, this, (url, path): (String, Option<String>)| {
+                this.sender.send(LuaToRustMsg::Download { url, path });
+                Ok(())
+            },
+        );
+
+        methods.add_method(
             "add_signal",
             |lua, _this, (name, func): (String, Function)| {
                 let lousy: Table = lua.load("require('lousy')").eval()?;
@@ -2487,6 +2495,90 @@ mod tests {
         assert!(esc_handled2);
         assert_eq!(runtime.get_mode(), "normal");
         assert!(!runtime.is_follow_tab());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_download_command_and_follow_hint() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = LuaSender::new(tx);
+        let storage = Arc::new(Mutex::new(crate::storage::Storage::in_memory().unwrap()));
+        let temp_dir = std::env::temp_dir().join(format!("neoweb_lua_dl_test_{}", std::process::id()));
+        let bm_path = temp_dir.join("Bookmarks");
+        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(bm_path))));
+        let runtime = LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone())).unwrap();
+        runtime.load_init_script();
+
+        // Drain any startup messages
+        while rx.try_recv().is_ok() {}
+
+        // 1. Test w:download Lua method
+        runtime
+            .lua
+            .load(r#"_G.w:download("https://example.com/archive.zip", "my_archive.zip")"#)
+            .exec()
+            .unwrap();
+
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::Download { url, path } => {
+                assert_eq!(url, "https://example.com/archive.zip");
+                assert_eq!(path, Some("my_archive.zip".to_string()));
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+
+        // 2. Test :download command
+        assert!(runtime.handle_key(":"));
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::SetMode(m) => assert_eq!(m, "command"),
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        for c in "download https://example.com/release.tar.gz".chars() {
+            assert!(runtime.handle_key(&c.to_string()));
+        }
+        assert!(runtime.handle_key("<CR>"));
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::SetMode(m) => assert_eq!(m, "normal"),
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::Download { url, path } => {
+                assert_eq!(url, "https://example.com/release.tar.gz");
+                assert_eq!(path, None);
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+
+        // 3. Test ;d follow hint download mode
+        assert!(runtime.handle_key(";"));
+        assert!(runtime.handle_key("d"));
+        assert_eq!(runtime.get_mode(), "follow");
+        assert_eq!(runtime.get_follow_target(), "download");
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::SetMode(m) => assert_eq!(m, "follow"),
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+
+        // Verify status bar badge
+        let props = crate::ui::status_bar::StatusBarProps {
+            mode: "follow",
+            uri: "https://example.com",
+            hover_uri: None,
+            progress: 1.0,
+            key_buffer: String::new(),
+            tab_index: 0,
+            total_tabs: 1,
+            scroll_pct: 0.0,
+        };
+        let status_view = runtime.get_status_view(&props).unwrap();
+        let view_str = format!("{:?}", status_view);
+        assert!(
+            view_str.contains("FOLLOW-DL"),
+            "Badge should display FOLLOW-DL: {}",
+            view_str
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

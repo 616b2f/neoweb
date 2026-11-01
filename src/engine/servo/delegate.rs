@@ -12,6 +12,7 @@ pub struct ServoTabState {
     pub pending_status: Option<LoadStatus>,
     pub pending_favicon: Option<crate::engine::Favicon>,
     pub pending_form_active: Option<bool>,
+    pub pending_downloads: Vec<(String, Option<String>)>,
     pub crashed: bool,
 }
 
@@ -73,6 +74,18 @@ impl WebViewDelegate for ServoTabDelegate {
     fn request_navigation(&self, _webview: WebView, navigation_request: NavigationRequest) {
         let scheme = navigation_request.url.scheme();
         if matches!(scheme, "http" | "https" | "about" | "data") {
+            let url = navigation_request.url.clone();
+            if crate::download::is_downloadable_url(&url) {
+                let suggested = crate::download::suggest_filename_from_url(&url);
+                tracing::info!(url = %url, suggested = %suggested, "Intercepted downloadable resource navigation");
+                if let Ok(mut state) = self.state.lock() {
+                    state
+                        .pending_downloads
+                        .push((url.to_string(), Some(suggested)));
+                }
+                navigation_request.deny();
+                return;
+            }
             navigation_request.allow();
         } else {
             warn!("Denying unsafe navigation scheme: {}", scheme);

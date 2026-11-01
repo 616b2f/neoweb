@@ -1,5 +1,6 @@
 pub mod app;
 pub mod bookmarks;
+pub mod download;
 pub mod engine;
 pub mod keymap;
 pub mod lua;

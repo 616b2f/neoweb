@@ -12,6 +12,10 @@ local ui = require("ui")
 local window = require("window")
 window.init(_G.w)
 local session = require("session")
+local downloads = require("downloads")
+if luakit then
+    luakit.downloads = downloads
+end
 
 -- Luakit Application Lifecycle Management
 if luakit then

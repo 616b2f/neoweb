@@ -68,6 +68,7 @@ modes.add_binds("normal", {
     end },
     { "f", "Follow link hints", function (w) modes.set_mode(w, "follow", "current") end },
     { "F", "Follow link hints in new tab", function (w) modes.set_mode(w, "follow", "tab") end },
+    { ";d", "Follow link and download target", function (w) modes.set_mode(w, "follow", "download") end },
     { "i", "Enter insert mode", function (w) modes.set_mode(w, "insert") end },
     { "<C-z>", "Enter passthrough mode", function (w) modes.set_mode(w, "passthrough") end },
     { "ZZ", "Exit Neoweb (save session)", function (w) luakit.quit({ save = true }) end },
@@ -266,6 +267,28 @@ modes.add_cmds({
     { "r", "Reload current page (alias)", function (w, arg) w:reload(arg == "!") end },
     { "back", "Navigate backward in history", function (w) w:back() end },
     { "forward", "Navigate forward in history", function (w) w:forward() end },
+    { "download", "Download current page or URL (:download [uri] [path])", function (w, arg)
+        local uri, path = (arg or ""):match("^%s*(%S+)%s*(.-)%s*$")
+        if not uri or uri == "" then
+            uri = w:uri()
+        end
+        if path == "" then
+            path = nil
+        end
+        local dl_mod = package.loaded["downloads"] or require("downloads")
+        dl_mod.download(w, uri, path)
+    end },
+    { "dl", "Download current page or URL (alias)", function (w, arg)
+        local uri, path = (arg or ""):match("^%s*(%S+)%s*(.-)%s*$")
+        if not uri or uri == "" then
+            uri = w:uri()
+        end
+        if path == "" then
+            path = nil
+        end
+        local dl_mod = package.loaded["downloads"] or require("downloads")
+        dl_mod.download(w, uri, path)
+    end },
     { "help", "Show Neoweb guide and keybindings", function (w) w:navigate("about:help") end },
     { "lua", "Evaluate arbitrary Lua code", function (w, arg)
         if arg and arg ~= "" then

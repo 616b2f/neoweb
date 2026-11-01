@@ -25,6 +25,10 @@ pub enum LuaToRustMsg {
     ClearSearch,
     SendKey(String),
     FollowHint(String),
+    Download {
+        url: String,
+        path: Option<String>,
+    },
 }
 
 #[derive(Clone)]

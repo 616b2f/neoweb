@@ -25,6 +25,7 @@ pub enum Message {
     ClearNotification,
     LuaUiCallback(usize),
     ViewportBoundsChanged(iced::Rectangle),
+    Download(crate::download::DownloadEvent),
 }
 
 pub struct NeowebApp {
@@ -142,12 +143,6 @@ impl NeowebApp {
                     }
                     Event::Window(iced::window::Event::Resized(size)) => {
                         self.window_width = size.width;
-                        let w = size.width.round().max(100.0) as u32;
-                        let tab_strip_h = self.lua_runtime.get_tab_strip_height();
-                        let bottom_bar_h = self.lua_runtime.get_bottom_bar_height();
-                        let viewport_h =
-                            (size.height - tab_strip_h - bottom_bar_h).round().max(100.0) as u32;
-                        self.tabs.resize_all(w, viewport_h);
                     }
                     Event::Window(iced::window::Event::CloseRequested) => {
                         // 1. Synchronously trigger Lua window "close" signal (triggers session saving & callbacks)
@@ -235,6 +230,31 @@ impl NeowebApp {
                 }
                 Task::none()
             }
+
+            Message::Download(ev) => {
+                match ev {
+                    crate::download::DownloadEvent::Started { filename, .. } => {
+                        self.lua_runtime
+                            .notify("info", &format!("Download started: {filename}"));
+                        self.lua_runtime.emit_signal("download::start", &filename);
+                    }
+                    crate::download::DownloadEvent::Progress { .. } => {}
+                    crate::download::DownloadEvent::Finished { filename, size, .. } => {
+                        let size_str = crate::download::format_bytes(size);
+                        self.lua_runtime.notify(
+                            "info",
+                            &format!("Download complete: {filename} ({size_str})"),
+                        );
+                        self.lua_runtime.emit_signal("download::finish", &filename);
+                    }
+                    crate::download::DownloadEvent::Failed { filename, error, .. } => {
+                        self.lua_runtime
+                            .notify("error", &format!("Download failed: {filename}: {error}"));
+                        self.lua_runtime.emit_signal("download::error", &filename);
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -283,6 +303,12 @@ impl NeowebApp {
                 crate::engine::EngineEvent::ContentUpdated => {}
                 crate::engine::EngineEvent::FaviconChanged(fav) => {
                     self.lua_runtime.emit_signal("property::favicon", &fav.glyph);
+                }
+                crate::engine::EngineEvent::DownloadRequested {
+                    url,
+                    suggested_filename,
+                } => {
+                    crate::download::start_download(url, suggested_filename.map(Into::into));
                 }
             }
         }
@@ -478,13 +504,15 @@ impl NeowebApp {
                 if let Some(target_url) =
                     self.tabs.active_engine_mut().follow_hint(&query)
                 {
-                    let is_new_tab = self.lua_runtime.is_follow_tab();
+                    let follow_target = self.lua_runtime.get_follow_target();
                     self.lua_runtime.set_mode("normal");
                     self.tabs.active_engine_mut().clear_hints();
 
                     if !target_url.is_empty() && !target_url.starts_with("javascript:") {
-                        if is_new_tab {
+                        if follow_target == "tab" {
                             self.tabs.new_tab(&target_url);
+                        } else if follow_target == "download" {
+                            crate::download::start_download(target_url, None);
                         } else {
                             self.tabs.active_engine_mut().load_url(&target_url);
                         }
@@ -499,6 +527,10 @@ impl NeowebApp {
                         self.lua_runtime.pop_follow_query();
                     }
                 }
+                Task::none()
+            }
+            LuaToRustMsg::Download { url, path } => {
+                crate::download::start_download(url, path.map(Into::into));
                 Task::none()
             }
         }
@@ -591,6 +623,7 @@ impl NeowebApp {
             time::every(Duration::from_millis(50)).map(|_| Message::Tick),
             Subscription::run(servo_waker_stream),
             Subscription::run(webdriver_request_stream),
+            Subscription::run(crate::download::download_event_stream),
         ])
     }
 

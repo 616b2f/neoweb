@@ -38,8 +38,13 @@ function _M.build(data, w)
     local badge_text = (mode_info and mode_info.badge and mode_info.badge.text)
         or (mode_badges[mode] and mode_badges[mode][1])
         or mode:upper()
-    if mode == "follow" and modes_mod and modes_mod.is_follow_tab and modes_mod.is_follow_tab() then
-        badge_text = "FOLLOW-TAB"
+    if mode == "follow" and modes_mod and modes_mod.get_follow_target then
+        local target = modes_mod.get_follow_target()
+        if target == "tab" then
+            badge_text = "FOLLOW-TAB"
+        elseif target == "download" then
+            badge_text = "FOLLOW-DL"
+        end
     end
     local badge_color = (mode_info and mode_info.badge and mode_info.badge.color)
         or (mode_badges[mode] and mode_badges[mode][2])

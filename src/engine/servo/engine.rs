@@ -1449,6 +1449,13 @@ impl WebEngine for ServoEngine {
                 self.events.push(EngineEvent::FormActive(active));
             }
 
+            for (url, suggested_filename) in state.pending_downloads.drain(..) {
+                self.events.push(EngineEvent::DownloadRequested {
+                    url,
+                    suggested_filename,
+                });
+            }
+
             if state.crashed {
                 state.crashed = false;
                 self.status = LoadStatus::Failed;

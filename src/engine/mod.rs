@@ -62,6 +62,10 @@ pub enum EngineEvent {
     HoverUri(Option<String>),
     FormActive(bool),
     ContentUpdated,
+    DownloadRequested {
+        url: String,
+        suggested_filename: Option<String>,
+    },
 }
 
 pub trait WebEngine {
