@@ -77,8 +77,8 @@ modes.add_binds("normal", {
     { "0", "Scroll far left", function (w) w:scroll_by(-100, 0) end },
     { "/", "Search forward on page", function (w) modes.set_prompt("/"); modes.set_mode(w, "search", "/") end },
     { "?", "Search backward on page", function (w) modes.set_prompt("?"); modes.set_mode(w, "search", "?") end },
-    { "n", "Find next search match", function (w, count) for _ = 1, (count or 1) do w:search_next(last_search_backward) end end },
-    { "N", "Find previous search match", function (w, count) for _ = 1, (count or 1) do w:search_next(not last_search_backward) end end },
+    { "n", "Find next search match", function (w, count) for _ = 1, (count or 1) do w:search_next({ backward = last_search_backward }) end end },
+    { "N", "Find previous search match", function (w, count) for _ = 1, (count or 1) do w:search_next({ backward = not last_search_backward }) end end },
 })
 
 -- Command Mode Bindings (handled completely in Lua using Neovim key notation)
@@ -190,7 +190,7 @@ modes.add_binds("search", {
         modes.set_mode(w, "normal")
         local query = text:gsub("^[/?]", "")
         if query and query ~= "" then
-            w:search(query, backward)
+            w:search(query, { backward = backward })
         end
     end },
     { "<BS>", "Delete character or exit search mode", function (w)
@@ -226,8 +226,14 @@ modes.add_binds("search", {
 modes.add_cmds({
     { "search", "Search text on current page", function (w, arg)
         if arg and arg ~= "" then
-            w:search(arg, false)
+            w:search(arg, { backward = false })
         end
+    end },
+    { "nohlsearch", "Clear in-page search highlighting", function (w)
+        w:clear_search()
+    end },
+    { "noh", "Clear in-page search highlighting (alias)", function (w)
+        w:clear_search()
     end },
     { "open", "Open URL or search query in current tab", function (w, arg)
         if arg and arg ~= "" then

@@ -193,19 +193,51 @@ impl UserData for LuaWindow {
 
         methods.add_method(
             "search",
-            |_, this, (query, backward): (String, Option<bool>)| {
-                this.sender.send(LuaToRustMsg::Search {
-                    query,
-                    backward: backward.unwrap_or(false),
-                });
+            |_, this, (query, opts_val): (Option<String>, Option<mlua::Value>)| {
+                let mut opts = crate::engine::SearchOptions::default();
+                if let Some(mlua::Value::Table(tbl)) = opts_val {
+                    if let Ok(b) = tbl.get::<bool>("backward") {
+                        opts.backward = b;
+                    }
+                    if let Ok(fnxt) = tbl
+                        .get::<bool>("find_next")
+                        .or_else(|_| tbl.get::<bool>("next"))
+                    {
+                        opts.find_next = fnxt;
+                    }
+                    if let Ok(w) = tbl.get::<bool>("wrap") {
+                        opts.wrap = w;
+                    }
+                    if let Ok(cs) = tbl.get::<bool>("case_sensitive") {
+                        opts.case_sensitive = cs;
+                    }
+                } else if let Some(mlua::Value::Boolean(b)) = opts_val {
+                    opts.backward = b;
+                }
+                this.sender.send(LuaToRustMsg::Search { query, opts });
                 Ok(())
             },
         );
 
-        methods.add_method("search_next", |_, this, backward: Option<bool>| {
-            this.sender.send(LuaToRustMsg::SearchNext {
-                backward: backward.unwrap_or(false),
-            });
+        methods.add_method("search_next", |_, this, opts_val: Option<mlua::Value>| {
+            let mut opts = crate::engine::SearchOptions {
+                find_next: true,
+                ..Default::default()
+            };
+            if let Some(mlua::Value::Table(tbl)) = opts_val {
+                if let Ok(b) = tbl.get::<bool>("backward") {
+                    opts.backward = b;
+                }
+                if let Ok(w) = tbl.get::<bool>("wrap") {
+                    opts.wrap = w;
+                }
+                if let Ok(cs) = tbl.get::<bool>("case_sensitive") {
+                    opts.case_sensitive = cs;
+                }
+            } else if let Some(mlua::Value::Boolean(b)) = opts_val {
+                opts.backward = b;
+            }
+            this.sender.send(LuaToRustMsg::Search { query: None, opts });
             Ok(())
         });
 
@@ -808,10 +840,7 @@ impl LuaRuntime {
             end
             return ""
         "#;
-        self.lua
-            .load(code)
-            .eval::<String>()
-            .unwrap_or_default()
+        self.lua.load(code).eval::<String>().unwrap_or_default()
     }
 
     pub fn pop_follow_query(&self) {
@@ -1476,9 +1505,9 @@ mod tests {
             other => panic!("Unexpected msg: {:?}", other),
         }
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::Search { query, backward } => {
-                assert_eq!(query, "rust");
-                assert!(!backward);
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, Some("rust".to_string()));
+                assert!(!opts.backward);
             }
             other => panic!("Unexpected msg: {:?}", other),
         }
@@ -1486,13 +1515,21 @@ mod tests {
         // Test next/previous search bindings in normal mode: n and N
         assert!(runtime.handle_key("n"));
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::SearchNext { backward } => assert!(!backward),
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, None);
+                assert!(!opts.backward);
+                assert!(opts.find_next);
+            }
             other => panic!("Unexpected msg: {:?}", other),
         }
 
         assert!(runtime.handle_key("N"));
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::SearchNext { backward } => assert!(backward),
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, None);
+                assert!(opts.backward);
+                assert!(opts.find_next);
+            }
             other => panic!("Unexpected msg: {:?}", other),
         }
 
@@ -1522,12 +1559,20 @@ mod tests {
         assert!(tabs_node.is_some(), "Expected get_tabs_view to return Some");
         let node = tabs_node.unwrap();
         match &node {
-            crate::ui::lua_view::LuaUiNode::Container { style, height, child, .. } => {
+            crate::ui::lua_view::LuaUiNode::Container {
+                style,
+                height,
+                child,
+                ..
+            } => {
                 assert_eq!(style, "tab_strip");
                 assert_eq!(height, &Some(iced::Length::Fixed(28.0)));
                 match &**child {
                     crate::ui::lua_view::LuaUiNode::Row {
-                        children, width, height, ..
+                        children,
+                        width,
+                        height,
+                        ..
                     } => {
                         assert_eq!(width, &Some(iced::Length::Fill));
                         assert_eq!(height, &Some(iced::Length::Fixed(28.0)));
@@ -1600,9 +1645,18 @@ mod tests {
                                                         ..
                                                     } => {
                                                         assert_eq!(content, "×");
-                                                        assert_eq!(align.as_deref(), Some("center"));
-                                                        assert_eq!(width, &Some(iced::Length::Fixed(16.0)));
-                                                        assert_eq!(height, &Some(iced::Length::Fixed(16.0)));
+                                                        assert_eq!(
+                                                            align.as_deref(),
+                                                            Some("center")
+                                                        );
+                                                        assert_eq!(
+                                                            width,
+                                                            &Some(iced::Length::Fixed(16.0))
+                                                        );
+                                                        assert_eq!(
+                                                            height,
+                                                            &Some(iced::Length::Fixed(16.0))
+                                                        );
                                                     }
                                                     _ => panic!(
                                                         "Expected centered text child inside close button"
@@ -1645,7 +1699,10 @@ mod tests {
                                                     height,
                                                     circle_radius,
                                                 } => {
-                                                    assert_eq!(width, &Some(iced::Length::Fixed(16.0)));
+                                                    assert_eq!(
+                                                        width,
+                                                        &Some(iced::Length::Fixed(16.0))
+                                                    );
                                                     assert_eq!(
                                                         height,
                                                         &Some(iced::Length::Fixed(16.0))
@@ -1839,9 +1896,7 @@ mod tests {
                         ) -> Option<(String, Option<String>)> {
                             match node {
                                 crate::ui::lua_view::LuaUiNode::Text {
-                                    content,
-                                    wrapping,
-                                    ..
+                                    content, wrapping, ..
                                 } if content.contains("...") => {
                                     Some((content.clone(), wrapping.clone()))
                                 }
@@ -2114,7 +2169,11 @@ mod tests {
 
         // Type an IP address and port: open 192.168.1.1:8080
         for ch in "open 192.168.1.1:8080".chars() {
-            let key = if ch == ' ' { "<Space>" } else { &ch.to_string() };
+            let key = if ch == ' ' {
+                "<Space>"
+            } else {
+                &ch.to_string()
+            };
             assert!(runtime.handle_key(key));
         }
         assert_eq!(runtime.get_prompt_text(), ":open 192.168.1.1:8080");
@@ -2140,7 +2199,11 @@ mod tests {
 
         // Type query containing digits: issue404 1234567890
         for ch in "issue404 1234567890".chars() {
-            let key = if ch == ' ' { "<Space>" } else { &ch.to_string() };
+            let key = if ch == ' ' {
+                "<Space>"
+            } else {
+                &ch.to_string()
+            };
             assert!(runtime.handle_key(key));
         }
         assert_eq!(runtime.get_prompt_text(), "/issue404 1234567890");
@@ -2213,9 +2276,9 @@ mod tests {
             other => panic!("Unexpected msg: {:?}", other),
         }
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::Search { query, backward } => {
-                assert_eq!(query, "revmatch");
-                assert!(backward);
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, Some("revmatch".to_string()));
+                assert!(opts.backward);
             }
             other => panic!("Unexpected msg: {:?}", other),
         }
@@ -2223,14 +2286,22 @@ mod tests {
         // In reverse search, 'n' continues searching backward
         assert!(runtime.handle_key("n"));
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::SearchNext { backward } => assert!(backward),
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, None);
+                assert!(opts.backward);
+                assert!(opts.find_next);
+            }
             other => panic!("Unexpected msg: {:?}", other),
         }
 
         // In reverse search, 'N' searches opposite direction (forward)
         assert!(runtime.handle_key("N"));
         match rx.try_recv().unwrap() {
-            LuaToRustMsg::SearchNext { backward } => assert!(!backward),
+            LuaToRustMsg::Search { query, opts } => {
+                assert_eq!(query, None);
+                assert!(!opts.backward);
+                assert!(opts.find_next);
+            }
             other => panic!("Unexpected msg: {:?}", other),
         }
 
@@ -2403,10 +2474,15 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = LuaSender::new(tx);
         let storage = Arc::new(Mutex::new(crate::storage::Storage::in_memory().unwrap()));
-        let temp_dir = std::env::temp_dir().join(format!("neoweb_lua_follow_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_lua_follow_test_{}", std::process::id()));
         let bm_path = temp_dir.join("Bookmarks");
-        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(bm_path))));
-        let runtime = LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone())).unwrap();
+        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(
+            bm_path,
+        ))));
+        let runtime =
+            LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone()))
+                .unwrap();
         runtime.load_init_script();
 
         assert_eq!(runtime.get_mode(), "normal");
@@ -2504,10 +2580,15 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = LuaSender::new(tx);
         let storage = Arc::new(Mutex::new(crate::storage::Storage::in_memory().unwrap()));
-        let temp_dir = std::env::temp_dir().join(format!("neoweb_lua_dl_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_lua_dl_test_{}", std::process::id()));
         let bm_path = temp_dir.join("Bookmarks");
-        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(bm_path))));
-        let runtime = LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone())).unwrap();
+        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(
+            bm_path,
+        ))));
+        let runtime =
+            LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone()))
+                .unwrap();
         runtime.load_init_script();
 
         // Drain any startup messages

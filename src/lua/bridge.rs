@@ -1,3 +1,4 @@
+use crate::engine::SearchOptions;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -16,12 +17,17 @@ pub enum LuaToRustMsg {
     Zoom(f32),
     ZoomReset,
     SetMode(String),
-    Notify { level: String, message: String },
+    Notify {
+        level: String,
+        message: String,
+    },
     Quit,
     ExecuteJs(String),
     SetClipboard(String),
-    Search { query: String, backward: bool },
-    SearchNext { backward: bool },
+    Search {
+        query: Option<String>,
+        opts: SearchOptions,
+    },
     ClearSearch,
     SendKey(String),
     FollowHint(String),

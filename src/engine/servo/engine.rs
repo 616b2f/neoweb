@@ -3,9 +3,13 @@
 use super::delegate::{ServoTabDelegate, ServoTabState};
 use super::hints::{HINT_CLEANUP_SCRIPT, HINT_EXTRACTION_SCRIPT, HINT_KEYS, HintJson};
 use super::host::ServoHost;
+use super::search::{
+    SEARCH_CLEAR_SCRIPT, SearchMatchPayload, build_search_script, collect_builtin_page_matches,
+    xml_escape_highlighted,
+};
 use crate::engine::{
-    icons, EngineEvent, Favicon, HintItem, LoadStatus, NavigationEntry, RenderFrame, SearchResult,
-    WebEngine,
+    EngineEvent, Favicon, HintItem, LoadStatus, NavigationEntry, RenderFrame, SearchOptions,
+    SearchResult, WebEngine, icons,
 };
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
@@ -57,7 +61,6 @@ static FONT_DB: std::sync::LazyLock<Arc<resvg::usvg::fontdb::Database>> =
         Arc::new(db)
     });
 
-
 /// Direct Servo Embedder Backend Pipeline
 ///
 /// Implements offscreen rendering architecture defined in Neoweb ROADMAP.md:
@@ -85,6 +88,8 @@ pub struct ServoEngine {
     hints: Vec<HintItem>,
     pending_hints: Arc<Mutex<Option<Vec<HintItem>>>>,
     active_search: Option<SearchResult>,
+    last_search_query: Option<String>,
+    last_search_opts: Option<SearchOptions>,
     current_page: Option<ServoWebPage>,
     pending_page: Arc<Mutex<Option<ServoWebPage>>>,
     is_about_page: bool,
@@ -116,6 +121,8 @@ impl ServoEngine {
             hints: Vec::new(),
             pending_hints: Arc::new(Mutex::new(None)),
             active_search: None,
+            last_search_query: None,
+            last_search_opts: None,
             current_page: None,
             pending_page: Arc::new(Mutex::new(None)),
             is_about_page: true,
@@ -138,8 +145,9 @@ impl ServoEngine {
             let psize = dpi::PhysicalSize::new(self.width.max(100), self.height.max(100));
             let webview_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 ServoHost::with_or_init(self.width, self.height, |host| {
-                    let mut builder = WebViewBuilder::new(&host.servo, host.rendering_context.clone())
-                        .delegate(delegate);
+                    let mut builder =
+                        WebViewBuilder::new(&host.servo, host.rendering_context.clone())
+                            .delegate(delegate);
                     if let Some(url) = initial_url_clone {
                         builder = builder.url(url);
                     }
@@ -152,7 +160,9 @@ impl ServoEngine {
                 Ok(Ok(wv)) => self.webview = Some(wv),
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
-                    warn!("Servo webview creation failed or panicked (WebRender context unavailable on current thread)");
+                    warn!(
+                        "Servo webview creation failed or panicked (WebRender context unavailable on current thread)"
+                    );
                     return Err("Failed to create webview".to_string());
                 }
             }
@@ -213,33 +223,58 @@ impl ServoEngine {
                 w / 2,
                 h / 2
             ),
-            "about:help" => format!(
-                r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+            "about:help" => {
+                let cs = self
+                    .last_search_opts
+                    .map(|o| o.case_sensitive)
+                    .unwrap_or(false);
+                let mut mc = 0;
+                let mut h_esc = |text: &str| {
+                    xml_escape_highlighted(text, self.active_search.as_ref(), cs, &mut mc)
+                };
+
+                format!(
+                    r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
                     <rect width="{w}" height="{h}" fill="#1a1b26"/>
                     <g transform="translate(0, -{scroll_offset})">
                         <rect x="40" y="40" width="{}" height="{}" rx="8" fill="#24283b" stroke="#3b4261" stroke-width="2"/>
-                        <text x="70" y="90" fill="#7aa2f7" font-family="sans-serif" font-size="28" font-weight="bold">Neoweb Help &amp; Keybindings</text>
-                        <text x="70" y="130" fill="#c0caf5" font-family="sans-serif" font-size="16">Vi-Style Modal Web Browser powered by Servo &amp; Iced</text>
+                        <text x="70" y="90" fill="#7aa2f7" font-family="sans-serif" font-size="28" font-weight="bold">{}</text>
+                        <text x="70" y="130" fill="#c0caf5" font-family="sans-serif" font-size="16">{}</text>
 
-                        <text x="70" y="180" fill="#9ece6a" font-family="sans-serif" font-size="18" font-weight="bold">Normal Mode Navigation</text>
-                        <text x="70" y="210" fill="#c0caf5" font-family="monospace" font-size="14">j / k : Scroll down / up (supports counts like 5j)</text>
-                        <text x="70" y="235" fill="#c0caf5" font-family="monospace" font-size="14">h / l : Scroll left / right</text>
-                        <text x="70" y="260" fill="#c0caf5" font-family="monospace" font-size="14">&lt;C-o&gt; / &lt;C-i&gt; : Session history back / forward</text>
-                        <text x="70" y="285" fill="#c0caf5" font-family="monospace" font-size="14">gg / G : Scroll to top / bottom</text>
+                        <text x="70" y="180" fill="#9ece6a" font-family="sans-serif" font-size="18" font-weight="bold">{}</text>
+                        <text x="70" y="210" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="235" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="260" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="285" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
 
-                        <text x="70" y="335" fill="#e0af68" font-family="sans-serif" font-size="18" font-weight="bold">Tabs &amp; Links</text>
-                        <text x="70" y="365" fill="#c0caf5" font-family="monospace" font-size="14">t / d : Open new tab / Close tab</text>
-                        <text x="70" y="390" fill="#c0caf5" font-family="monospace" font-size="14">gt / gT : Next tab / Previous tab</text>
-                        <text x="70" y="415" fill="#c0caf5" font-family="monospace" font-size="14">f / F : Follow hint (current tab / background tab)</text>
+                        <text x="70" y="335" fill="#e0af68" font-family="sans-serif" font-size="18" font-weight="bold">{}</text>
+                        <text x="70" y="365" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="390" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="415" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
 
-                        <text x="70" y="465" fill="#bb9aaf7" font-family="sans-serif" font-size="18" font-weight="bold">Commands &amp; Search</text>
-                        <text x="70" y="495" fill="#c0caf5" font-family="monospace" font-size="14">: : Enter command prompt (:open, :tabopen, :session save)</text>
-                        <text x="70" y="520" fill="#c0caf5" font-family="monospace" font-size="14">/ : Search forward, ? : Search backward</text>
+                        <text x="70" y="465" fill="#bb9aaf7" font-family="sans-serif" font-size="18" font-weight="bold">{}</text>
+                        <text x="70" y="495" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
+                        <text x="70" y="520" fill="#c0caf5" font-family="monospace" font-size="14">{}</text>
                     </g>
                 </svg>"##,
-                w.saturating_sub(80),
-                h.saturating_sub(80)
-            ),
+                    w.saturating_sub(80),
+                    h.saturating_sub(80),
+                    h_esc("Neoweb Help & Keybindings"),
+                    h_esc("Vi-Style Modal Web Browser powered by Servo & Iced"),
+                    h_esc("Normal Mode Navigation"),
+                    h_esc("j / k : Scroll down / up (supports counts like 5j)"),
+                    h_esc("h / l : Scroll left / right"),
+                    h_esc("<C-o> / <C-i> : Session history back / forward"),
+                    h_esc("gg / G : Scroll to top / bottom"),
+                    h_esc("Tabs & Links"),
+                    h_esc("t / d : Open new tab / Close tab"),
+                    h_esc("gt / gT : Next tab / Previous tab"),
+                    h_esc("f / F : Follow hint (current tab / background tab)"),
+                    h_esc("Commands & Search"),
+                    h_esc(": : Enter command prompt (:open, :tabopen, :session save)"),
+                    h_esc("/ : Search forward, ? : Search backward"),
+                )
+            }
             "about:neoweb" => format!(
                 r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
                     <rect width="{w}" height="{h}" fill="#1a1b26"/>
@@ -316,9 +351,17 @@ impl ServoEngine {
         let content_width = w.saturating_sub(80);
         let mut y = 50;
 
+        let cs = self
+            .last_search_opts
+            .map(|o| o.case_sensitive)
+            .unwrap_or(false);
+        let mut mc = 0;
+
         // 1. Page Header Card
-        let title_escaped = xml_escape(&page.title);
-        let uri_escaped = xml_escape(&page.uri);
+        let title_escaped =
+            xml_escape_highlighted(&page.title, self.active_search.as_ref(), cs, &mut mc);
+        let uri_escaped =
+            xml_escape_highlighted(&page.uri, self.active_search.as_ref(), cs, &mut mc);
         elements.push_str(&format!(
             r##"<rect x="40" y="{y}" width="{content_width}" height="75" rx="8" fill="#24283b" stroke="#3b4261" stroke-width="1.5"/>
             <text x="60" y="{}" fill="#7aa2f7" font-family="sans-serif" font-size="20" font-weight="bold">{title_escaped}</text>
@@ -330,7 +373,8 @@ impl ServoEngine {
 
         // 2. Headings
         for heading in page.headings.iter().take(5) {
-            let h_escaped = xml_escape(heading);
+            let h_escaped =
+                xml_escape_highlighted(heading, self.active_search.as_ref(), cs, &mut mc);
             elements.push_str(&format!(
                 r##"<text x="40" y="{y}" fill="#9ece6a" font-family="sans-serif" font-size="18" font-weight="bold">{h_escaped}</text>"##
             ));
@@ -343,7 +387,7 @@ impl ServoEngine {
 
         // 3. Body paragraphs
         for para in page.body_text.iter().take(8) {
-            let p_escaped = xml_escape(para);
+            let p_escaped = xml_escape_highlighted(para, self.active_search.as_ref(), cs, &mut mc);
             let truncated = if p_escaped.len() > 140 {
                 format!("{}...", &p_escaped[..137])
             } else {
@@ -368,8 +412,10 @@ impl ServoEngine {
 
             for (idx, (label, href)) in page.links.iter().take(25).enumerate() {
                 let hint_key = HINT_KEYS.get(idx).unwrap_or(&"?");
-                let label_escaped = xml_escape(label);
-                let href_escaped = xml_escape(href);
+                let label_escaped =
+                    xml_escape_highlighted(label, self.active_search.as_ref(), cs, &mut mc);
+                let href_escaped =
+                    xml_escape_highlighted(href, self.active_search.as_ref(), cs, &mut mc);
 
                 let display_text = if label_escaped.is_empty() {
                     href_escaped
@@ -547,7 +593,7 @@ impl ServoEngine {
                                         let abs_url = if href.starts_with("http://")
                                             || href.starts_with("https://")
                                         {
-                                             href.to_string()
+                                            href.to_string()
                                         } else if let Ok(base) = url::Url::parse(&final_url) {
                                             base.join(href)
                                                 .map(|u| u.to_string())
@@ -655,6 +701,7 @@ impl WebEngine for ServoEngine {
         self.progress = 0.2;
         self.scroll_y = 0.0;
         self.current_page = None;
+        self.active_search = None;
         self.events.push(EngineEvent::UriChanged(self.uri.clone()));
         self.events
             .push(EngineEvent::StatusChanged(LoadStatus::Provisional));
@@ -812,7 +859,9 @@ impl WebEngine for ServoEngine {
     }
 
     fn reload(&mut self, _bypass_cache: bool) {
-        if !self.is_about_page && let Some(wv) = &self.webview {
+        if !self.is_about_page
+            && let Some(wv) = &self.webview
+        {
             wv.reload();
         } else {
             let uri = self.uri.clone();
@@ -1012,7 +1061,8 @@ impl WebEngine for ServoEngine {
         }
         if script.contains("document.title") {
             Ok(self.title.clone())
-        } else if script.contains("document.location.href") || script.contains("window.location.href")
+        } else if script.contains("document.location.href")
+            || script.contains("window.location.href")
         {
             Ok(self.uri.clone())
         } else {
@@ -1142,26 +1192,144 @@ impl WebEngine for ServoEngine {
         }
     }
 
-    fn search(&mut self, query: &str, _backward: bool) -> Option<SearchResult> {
-        if query.is_empty() {
-            self.clear_search();
-            return None;
-        }
-        let result = SearchResult {
-            query: query.to_string(),
-            current_match: 1,
-            total_matches: 1,
+    fn search(&mut self, query_opt: Option<&str>, mut opts: SearchOptions) -> Option<SearchResult> {
+        let q = match query_opt {
+            Some("") => {
+                self.clear_search();
+                return None;
+            }
+            Some(q_str) => {
+                self.last_search_query = Some(q_str.to_string());
+                self.last_search_opts = Some(opts);
+                q_str
+            }
+            None => {
+                if let Some(last_q) = &self.last_search_query {
+                    opts.find_next = true;
+                    last_q.as_str()
+                } else {
+                    return None;
+                }
+            }
         };
-        self.active_search = Some(result.clone());
-        Some(result)
-    }
 
-    fn search_next(&mut self, _backward: bool) -> Option<SearchResult> {
-        self.active_search.clone()
+        if self.is_about_page || self.current_page.is_some() {
+            let matches = collect_builtin_page_matches(
+                &self.uri,
+                self.current_page.as_ref(),
+                q,
+                opts.case_sensitive,
+            );
+            let total = matches.len();
+            if total == 0 {
+                let res = SearchResult {
+                    query: q.to_string(),
+                    current_match: 0,
+                    total_matches: 0,
+                };
+                self.active_search = Some(res.clone());
+                self.update_offscreen_frame();
+                return Some(res);
+            }
+
+            let next_match = match &self.active_search {
+                Some(prev) if opts.find_next && prev.query == q && prev.total_matches == total => {
+                    let prev_idx = prev.current_match.saturating_sub(1);
+                    if opts.backward {
+                        if opts.wrap {
+                            (prev_idx + total - 1) % total + 1
+                        } else {
+                            prev_idx.saturating_sub(1) + 1
+                        }
+                    } else if opts.wrap {
+                        (prev_idx + 1) % total + 1
+                    } else {
+                        (prev_idx + 1).min(total - 1) + 1
+                    }
+                }
+                _ => {
+                    if opts.backward {
+                        total
+                    } else {
+                        1
+                    }
+                }
+            };
+
+            let res = SearchResult {
+                query: q.to_string(),
+                current_match: next_match,
+                total_matches: total,
+            };
+            self.active_search = Some(res.clone());
+
+            // Scroll match into view
+            if let Some(&y_pos) = matches.get(next_match.saturating_sub(1)) {
+                let view_h = self.height as f32;
+                if y_pos < self.scroll_y + 40.0 || y_pos > self.scroll_y + view_h - 40.0 {
+                    self.scroll_y = (y_pos - view_h / 2.0).max(0.0);
+                }
+            }
+
+            self.update_offscreen_frame();
+            return Some(res);
+        }
+
+        // Live Servo WebView DOM Search
+        if let Some(wv) = &self.webview {
+            let script = build_search_script(q, opts);
+            let result_slot: Arc<Mutex<Option<Option<SearchResult>>>> = Arc::new(Mutex::new(None));
+            let slot_clone = result_slot.clone();
+            let query_str = q.to_string();
+            let needs_paint = self.needs_paint.clone();
+
+            wv.evaluate_javascript(script, move |res| {
+                let parsed = match res {
+                    Ok(JSValue::String(json_str)) => {
+                        serde_json::from_str::<SearchMatchPayload>(&json_str).ok()
+                    }
+                    _ => None,
+                };
+                let search_res = parsed.map(|p| SearchResult {
+                    query: query_str,
+                    current_match: p.current_match,
+                    total_matches: p.total_matches,
+                });
+                if let Ok(mut lock) = slot_clone.lock() {
+                    *lock = Some(search_res);
+                }
+                needs_paint.store(true, Ordering::SeqCst);
+            });
+
+            // Pump event loop to receive JS evaluation result
+            for _ in 0..50 {
+                let _ = ServoHost::with(|host| {
+                    host.servo.spin_event_loop();
+                });
+                if let Ok(mut lock) = result_slot.lock()
+                    && let Some(res_opt) = lock.take()
+                {
+                    self.active_search = res_opt.clone();
+                    return res_opt;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        None
     }
 
     fn clear_search(&mut self) {
         self.active_search = None;
+        if let Some(wv) = &self.webview {
+            let needs_paint = self.needs_paint.clone();
+            wv.evaluate_javascript(SEARCH_CLEAR_SCRIPT, move |_| {
+                needs_paint.store(true, Ordering::SeqCst);
+            });
+        }
+        if self.is_about_page || self.current_page.is_some() {
+            self.update_offscreen_frame();
+        }
     }
 
     fn active_search(&self) -> Option<&SearchResult> {
@@ -1214,13 +1382,7 @@ impl WebEngine for ServoEngine {
         }
     }
 
-    fn handle_mouse_button(
-        &mut self,
-        button: iced::mouse::Button,
-        pressed: bool,
-        x: f32,
-        y: f32,
-    ) {
+    fn handle_mouse_button(&mut self, button: iced::mouse::Button, pressed: bool, x: f32, y: f32) {
         if let Some(wv) = &self.webview {
             let pt = WebViewPoint::from(euclid::Point2D::<f32, CSSPixel>::new(x, y));
             let action = if pressed {
@@ -1291,7 +1453,9 @@ impl WebEngine for ServoEngine {
             let stroke = crate::keymap::KeyStroke::from_neovim_string(key_str);
             let (servo_key, servo_code) = match stroke.as_ref().map(|s| &s.key) {
                 Some(crate::keymap::KeyKind::Named(named)) => match named {
-                    crate::keymap::NamedKeyKind::Enter => (Key::Named(NamedKey::Enter), Code::Enter),
+                    crate::keymap::NamedKeyKind::Enter => {
+                        (Key::Named(NamedKey::Enter), Code::Enter)
+                    }
                     crate::keymap::NamedKeyKind::Backspace => {
                         (Key::Named(NamedKey::Backspace), Code::Backspace)
                     }
@@ -1459,7 +1623,8 @@ impl WebEngine for ServoEngine {
             if state.crashed {
                 state.crashed = false;
                 self.status = LoadStatus::Failed;
-                self.events.push(EngineEvent::StatusChanged(LoadStatus::Failed));
+                self.events
+                    .push(EngineEvent::StatusChanged(LoadStatus::Failed));
             }
 
             if let Some(url) = state.pending_url.take() {
@@ -1509,9 +1674,7 @@ impl WebEngine for ServoEngine {
                 && self.status == LoadStatus::Finished
                 && !self.is_about_page
                 && self.current_page.is_none());
-        if should_paint
-            && let Some(wv) = &self.webview
-        {
+        if should_paint && let Some(wv) = &self.webview {
             let _ = ServoHost::with(|host| {
                 wv.paint();
                 let ctx_size = host.rendering_context.size();

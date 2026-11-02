@@ -4,6 +4,7 @@ pub mod delegate;
 pub mod engine;
 pub mod hints;
 pub mod host;
+pub mod search;
 pub mod webdriver;
 
 #[cfg(test)]
@@ -12,7 +13,7 @@ mod tests;
 pub use delegate::{ServoTabDelegate, ServoTabState};
 pub use engine::{ServoEngine, ServoWebPage};
 pub use host::{
-    register_servo_waker, set_process_mode, shutdown_servo, ServoEventLoopWaker, ServoHost,
+    ServoEventLoopWaker, ServoHost, register_servo_waker, set_process_mode, shutdown_servo,
 };
 pub use webdriver::{
     DEFAULT_REMOTE_DEBUGGING_PORT, DEFAULT_WEBDRIVER_PORT, ELEMENT_KEY, ServoWebDriverClient,

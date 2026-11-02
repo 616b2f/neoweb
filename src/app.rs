@@ -127,9 +127,7 @@ impl NeowebApp {
                 self.poll_active_engine()
             }
 
-            Message::ServoWake => {
-                self.poll_active_engine()
-            }
+            Message::ServoWake => self.poll_active_engine(),
 
             Message::EventOccurred(event) => {
                 match event {
@@ -247,7 +245,9 @@ impl NeowebApp {
                         );
                         self.lua_runtime.emit_signal("download::finish", &filename);
                     }
-                    crate::download::DownloadEvent::Failed { filename, error, .. } => {
+                    crate::download::DownloadEvent::Failed {
+                        filename, error, ..
+                    } => {
                         self.lua_runtime
                             .notify("error", &format!("Download failed: {filename}: {error}"));
                         self.lua_runtime.emit_signal("download::error", &filename);
@@ -302,7 +302,8 @@ impl NeowebApp {
                 }
                 crate::engine::EngineEvent::ContentUpdated => {}
                 crate::engine::EngineEvent::FaviconChanged(fav) => {
-                    self.lua_runtime.emit_signal("property::favicon", &fav.glyph);
+                    self.lua_runtime
+                        .emit_signal("property::favicon", &fav.glyph);
                 }
                 crate::engine::EngineEvent::DownloadRequested {
                     url,
@@ -433,14 +434,12 @@ impl NeowebApp {
                 }
                 Task::none()
             }
-            LuaToRustMsg::Search { query, backward } => {
-                let result = self.tabs.active_engine_mut().search(&query, backward);
+            LuaToRustMsg::Search { query, opts } => {
+                let result = self.tabs.active_engine_mut().search(query.as_deref(), opts);
                 if let Some(res) = result {
                     if res.total_matches == 0 {
-                        self.lua_runtime.notify(
-                            "warning",
-                            &format!("Pattern not found: {}", res.query),
-                        );
+                        self.lua_runtime
+                            .notify("warning", &format!("Pattern not found: {}", res.query));
                     } else {
                         self.lua_runtime.notify(
                             "info",
@@ -449,49 +448,17 @@ impl NeowebApp {
                                 res.current_match, res.total_matches, res.query
                             ),
                         );
-                        let scroll_y = self.tabs.active_engine().scroll_y();
-                        return iced::widget::operation::snap_to(
-                            iced::widget::Id::new(crate::ui::viewport::VIEWPORT_SCROLL_ID),
-                            iced::widget::scrollable::RelativeOffset {
-                                x: None,
-                                y: Some((scroll_y / 1000.0).clamp(0.0, 1.0)),
-                            },
-                        );
                     }
+                } else if query.is_none() {
+                    self.lua_runtime
+                        .notify("warning", "No previous search pattern");
                 }
-                Task::none()
-            }
-            LuaToRustMsg::SearchNext { backward } => {
-                let result = self.tabs.active_engine_mut().search_next(backward);
-                if let Some(res) = result {
-                    if res.total_matches == 0 {
-                        self.lua_runtime.notify(
-                            "warning",
-                            &format!("Pattern not found: {}", res.query),
-                        );
-                    } else {
-                        self.lua_runtime.notify(
-                            "info",
-                            &format!(
-                                "[{}/{}] Match: {}",
-                                res.current_match, res.total_matches, res.query
-                            ),
-                        );
-                        let scroll_y = self.tabs.active_engine().scroll_y();
-                        return iced::widget::operation::snap_to(
-                            iced::widget::Id::new(crate::ui::viewport::VIEWPORT_SCROLL_ID),
-                            iced::widget::scrollable::RelativeOffset {
-                                x: None,
-                                y: Some((scroll_y / 1000.0).clamp(0.0, 1.0)),
-                            },
-                        );
-                    }
-                }
-                Task::none()
+                self.poll_active_engine()
             }
             LuaToRustMsg::ClearSearch => {
                 self.tabs.active_engine_mut().clear_search();
-                Task::none()
+                self.lua_runtime.clear_notification();
+                self.poll_active_engine()
             }
             LuaToRustMsg::SendKey(key_str) => {
                 self.tabs.active_engine_mut().handle_key_str(&key_str);
@@ -501,9 +468,7 @@ impl NeowebApp {
                 if query.is_empty() {
                     return Task::none();
                 }
-                if let Some(target_url) =
-                    self.tabs.active_engine_mut().follow_hint(&query)
-                {
+                if let Some(target_url) = self.tabs.active_engine_mut().follow_hint(&query) {
                     let follow_target = self.lua_runtime.get_follow_target();
                     self.lua_runtime.set_mode("normal");
                     self.tabs.active_engine_mut().clear_hints();
@@ -552,7 +517,12 @@ impl NeowebApp {
         // 1. Tab strip widget (Lua-driven)
         let tab_strip = self
             .lua_runtime
-            .get_tabs_view(active_idx, self.tabs.tabs(), self.tick_count, Some(self.window_width))
+            .get_tabs_view(
+                active_idx,
+                self.tabs.tabs(),
+                self.tick_count,
+                Some(self.window_width),
+            )
             .map(|node| render_lua_node(&node, Message::LuaUiCallback))
             .unwrap_or_else(|| Space::new().into());
 
@@ -698,7 +668,10 @@ impl NeowebApp {
                         .active_engine_mut()
                         .eval_js("document.documentElement.outerHTML")
                         .unwrap_or_else(|_| {
-                            format!("<html><head><title>{}</title></head><body></body></html>", title)
+                            format!(
+                                "<html><head><title>{}</title></head><body></body></html>",
+                                title
+                            )
                         });
                     Ok(json!(src))
                 }
@@ -1033,16 +1006,12 @@ impl NeowebApp {
                         "wheel" => {
                             for step in steps {
                                 if step.get("type").and_then(|v| v.as_str()) == Some("scroll") {
-                                    let dx = step
-                                        .get("deltaX")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.0)
-                                        as f32;
-                                    let dy = step
-                                        .get("deltaY")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.0)
-                                        as f32;
+                                    let dx =
+                                        step.get("deltaX").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                                            as f32;
+                                    let dy =
+                                        step.get("deltaY").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                                            as f32;
                                     self.tabs.active_engine_mut().scroll_by(dx, dy);
                                 }
                             }
@@ -1072,10 +1041,7 @@ impl NeowebApp {
             "css selector" | "tag name" => hints
                 .into_iter()
                 .filter(|h| {
-                    value == "a"
-                        || value == "*"
-                        || h.label.contains(value)
-                        || h.uri.contains(value)
+                    value == "a" || value == "*" || h.label.contains(value) || h.uri.contains(value)
                 })
                 .map(|h| json!({ ELEMENT_KEY: format!("hint-{}", h.key) }))
                 .collect(),
@@ -1183,7 +1149,8 @@ mod tests {
 
     #[test]
     fn test_app_graceful_shutdown_and_session_save() {
-        let temp_dir = std::env::temp_dir().join(format!("neoweb_test_shutdown_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_test_shutdown_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
 
@@ -1211,8 +1178,8 @@ mod tests {
 
     #[test]
     fn test_viewport_bounds_and_mouse_event_dispatch() {
-        let temp_dir = std::env::temp_dir()
-            .join(format!("neoweb_test_mouse_bounds_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_test_mouse_bounds_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
 
@@ -1223,10 +1190,8 @@ mod tests {
         assert_eq!(app.viewport_bounds.height, 784.0);
 
         // 2. ViewportBoundsChanged updates bounds and viewport size
-        let custom_bounds = iced::Rectangle::new(
-            iced::Point::new(10.0, 35.0),
-            iced::Size::new(1000.0, 600.0),
-        );
+        let custom_bounds =
+            iced::Rectangle::new(iced::Point::new(10.0, 35.0), iced::Size::new(1000.0, 600.0));
         let _ = app.update(Message::ViewportBoundsChanged(custom_bounds));
         assert_eq!(app.viewport_bounds, custom_bounds);
         let (vw, vh) = app.tabs.active_engine().viewport_size();

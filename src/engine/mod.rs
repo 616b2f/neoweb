@@ -45,6 +45,25 @@ pub struct NavigationEntry {
     pub favicon: Option<Favicon>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchOptions {
+    pub backward: bool,
+    pub find_next: bool,
+    pub wrap: bool,
+    pub case_sensitive: bool,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            backward: false,
+            find_next: false,
+            wrap: true,
+            case_sensitive: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchResult {
     pub query: String,
@@ -104,10 +123,7 @@ pub trait WebEngine {
     fn activate_follow_mode(&mut self) {}
     fn clear_hints(&mut self) {}
 
-    fn search(&mut self, _query: &str, _backward: bool) -> Option<SearchResult> {
-        None
-    }
-    fn search_next(&mut self, _backward: bool) -> Option<SearchResult> {
+    fn search(&mut self, _query: Option<&str>, _opts: SearchOptions) -> Option<SearchResult> {
         None
     }
     fn clear_search(&mut self) {}
@@ -127,7 +143,14 @@ pub trait WebEngine {
     fn deactivate(&mut self) {}
 
     fn handle_mouse_move(&mut self, _x: f32, _y: f32) {}
-    fn handle_mouse_button(&mut self, _button: iced::mouse::Button, _pressed: bool, _x: f32, _y: f32) {}
+    fn handle_mouse_button(
+        &mut self,
+        _button: iced::mouse::Button,
+        _pressed: bool,
+        _x: f32,
+        _y: f32,
+    ) {
+    }
     fn handle_wheel(&mut self, _dx: f32, _dy: f32, _x: f32, _y: f32) {}
     fn handle_key_str(&mut self, _key_str: &str) {}
 

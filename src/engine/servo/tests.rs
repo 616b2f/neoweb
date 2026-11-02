@@ -128,7 +128,11 @@ fn test_servo_text_rasterization_produces_visible_pixels() {
 fn test_software_rendering_context() {
     use servo::SoftwareRenderingContext;
     let ctx = SoftwareRenderingContext::new(dpi::PhysicalSize::new(200, 200));
-    assert!(ctx.is_ok(), "SoftwareRenderingContext should initialize: {:?}", ctx.err());
+    assert!(
+        ctx.is_ok(),
+        "SoftwareRenderingContext should initialize: {:?}",
+        ctx.err()
+    );
 }
 
 #[test]
@@ -277,17 +281,60 @@ fn test_live_servo_load() {
 
 #[test]
 fn test_servo_engine_in_page_search() {
+    use crate::engine::SearchOptions;
+
     let mut engine = ServoEngine::new("about:help");
     assert!(engine.active_search().is_none());
 
-    let res = engine.search("scroll", false).expect("Expected search result");
+    let res = engine
+        .search(Some("scroll"), SearchOptions::default())
+        .expect("Expected search result");
     assert_eq!(res.query, "scroll");
     assert_eq!(res.current_match, 1);
-    assert_eq!(res.total_matches, 1);
+    assert!(
+        res.total_matches >= 3,
+        "Expected at least 3 matches for 'scroll' on about:help"
+    );
     assert!(engine.active_search().is_some());
 
-    let next_res = engine.search_next(false).expect("Expected next result");
+    // Step forward (n)
+    let next_res = engine
+        .search(
+            None,
+            SearchOptions {
+                find_next: true,
+                ..Default::default()
+            },
+        )
+        .expect("Expected next result");
     assert_eq!(next_res.query, "scroll");
+    assert_eq!(next_res.current_match, 2);
+
+    // Step backward (N)
+    let prev_res = engine
+        .search(
+            None,
+            SearchOptions {
+                find_next: true,
+                backward: true,
+                ..Default::default()
+            },
+        )
+        .expect("Expected prev result");
+    assert_eq!(prev_res.query, "scroll");
+    assert_eq!(prev_res.current_match, 1);
+
+    // Case sensitive search
+    let cs_res = engine
+        .search(
+            Some("SCROLL"),
+            SearchOptions {
+                case_sensitive: true,
+                ..Default::default()
+            },
+        )
+        .expect("Expected search result");
+    assert_eq!(cs_res.total_matches, 0);
 
     engine.clear_search();
     assert!(engine.active_search().is_none());
@@ -447,10 +494,7 @@ fn test_webdriver_bidi_websocket_end_to_end() {
 
     let mut harness = WebDriverTestHarness::start(port).expect("BiDi harness should start");
     assert_eq!(harness.port(), port);
-    assert_eq!(
-        harness.ws_url(),
-        format!("ws://127.0.0.1:{port}/session")
-    );
+    assert_eq!(harness.ws_url(), format!("ws://127.0.0.1:{port}/session"));
 
     // 2. Verify Chromium/Firefox `/json/version` discovery endpoint exposes `webSocketDebuggerUrl`
     let version_info = harness.get("/json/version");
@@ -514,10 +558,7 @@ fn test_webdriver_bidi_websocket_end_to_end() {
     let nodes = located["result"]["nodes"].as_array().unwrap();
     assert!(!nodes.is_empty());
     assert_eq!(nodes[0]["sharedId"], json!("hint-a"));
-    assert_eq!(
-        nodes[0]["value"]["attributes"]["href"],
-        json!("about:help")
-    );
+    assert_eq!(nodes[0]["value"]["attributes"]["href"], json!("about:help"));
 
     // 8. Navigate via `browsingContext.navigate` and verify pushed BiDi events
     let nav_resp = bidi.send_command(
@@ -659,13 +700,19 @@ fn test_servo_host_tuning_and_options() {
     assert!(prefs.dom_servoparser_async_html_tokenizer_enabled);
     assert!(prefs.dom_offscreen_canvas_enabled);
     assert_eq!(prefs.thread_pool_workers_max, workers as u64);
-    assert_eq!(prefs.thread_pool_webrender_workers_max, (workers / 2).max(1) as u64);
+    assert_eq!(
+        prefs.thread_pool_webrender_workers_max,
+        (workers / 2).max(1) as u64
+    );
     assert_eq!(prefs.thread_pool_async_runtime_workers_max, workers as u64);
 
     // 3. Opts background hang monitoring & process isolation toggle
     let opts = build_servo_opts();
     assert!(opts.background_hang_monitor);
-    assert!(!opts.multiprocess, "Tests should run in single-process mode by default");
+    assert!(
+        !opts.multiprocess,
+        "Tests should run in single-process mode by default"
+    );
 
     // Explicitly enabling multiprocess mode (production default when single-process is not passed)
     super::host::set_process_mode(true);
@@ -677,4 +724,3 @@ fn test_servo_host_tuning_and_options() {
     let opts_single = build_servo_opts();
     assert!(!opts_single.multiprocess);
 }
-
