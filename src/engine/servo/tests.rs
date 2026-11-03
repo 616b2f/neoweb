@@ -724,3 +724,21 @@ fn test_servo_host_tuning_and_options() {
     let opts_single = build_servo_opts();
     assert!(!opts_single.multiprocess);
 }
+
+#[test]
+fn test_servo_engine_simple_dialog_handling() {
+    let mut engine = ServoEngine::new("about:blank");
+    assert!(engine.active_dialog().is_none());
+
+    // Verify polling with no dialog
+    let events = engine.poll_events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, crate::engine::EngineEvent::Dialog(_)))
+    );
+
+    // Test dismiss/response safety when no dialog active
+    engine.handle_dialog_response(999, crate::engine::DialogResponse::Cancel);
+    assert!(engine.active_dialog().is_none());
+}

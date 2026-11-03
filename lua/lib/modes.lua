@@ -146,6 +146,12 @@ function _M.handle_key(w, key)
             if current_mode == "search" and w and w.clear_search then
                 w:clear_search()
             end
+            if current_mode == "dialog" then
+                local dialog = package.loaded["dialog"]
+                if dialog and dialog.cancel then
+                    dialog.cancel(w)
+                end
+            end
             _M.set_mode(w, "normal")
             return true
         end
@@ -155,6 +161,61 @@ function _M.handle_key(w, key)
     local mode_info = modes_table[current_mode]
     local is_modal = (mode_info and mode_info.modal_input) or false
     local is_passthrough = (mode_info and mode_info.passthrough) or false
+
+    if current_mode == "dialog" then
+        local dialog = package.loaded["dialog"]
+        if dialog and dialog.current then
+            local cur = dialog.current
+            if key == "<CR>" or key == "<Return>" then
+                dialog.confirm(w)
+                return true
+            elseif key == "<Esc>" or key == "<Escape>" then
+                dialog.cancel(w)
+                return true
+            end
+
+            if cur.type == "confirm" then
+                if key == "y" or key == "Y" then
+                    dialog.confirm(w)
+                    return true
+                elseif key == "n" or key == "N" then
+                    dialog.cancel(w)
+                    return true
+                end
+            elseif cur.type == "alert" then
+                if key == "<Space>" then
+                    dialog.confirm(w)
+                    return true
+                end
+            elseif cur.type == "prompt" then
+                if key == "<BS>" or key == "<C-h>" then
+                    local s = cur.input or ""
+                    if #s > 0 then
+                        local p = #s
+                        while p > 1 and (s:byte(p) >= 0x80 and s:byte(p) < 0xC0) do
+                            p = p - 1
+                        end
+                        cur.input = s:sub(1, p - 1)
+                    end
+                    return true
+                elseif key == "<C-w>" then
+                    local s = cur.input or ""
+                    cur.input = s:gsub("%s*[^%s]+%s*$", "")
+                    return true
+                elseif key == "<C-u>" then
+                    cur.input = ""
+                    return true
+                else
+                    local char = (key == "<Space>") and " " or key
+                    if not (char:len() > 1 and char:sub(1, 1) == "<" and char:sub(-1) == ">") and not char:find("%c") then
+                        cur.input = (cur.input or "") .. char
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
 
     if current_mode == "follow" then
         if key == "<BS>" or key == "<C-h>" then
@@ -345,6 +406,22 @@ _M.new_mode("follow", {
         follow_target = "current"
         if w and w.clear_hints then
             w:clear_hints()
+        end
+    end,
+})
+
+_M.new_mode("dialog", {
+    description = "JavaScript dialog interaction mode",
+    badge = { text = "DIALOG", color = "yellow" },
+    modal_input = true,
+    enter = function (w)
+        prompt_text = ""
+    end,
+    leave = function (w)
+        prompt_text = ""
+        local dialog = package.loaded["dialog"]
+        if dialog and dialog.current then
+            dialog.cancel(w)
         end
     end,
 })

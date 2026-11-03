@@ -1,6 +1,9 @@
 //! Servo WebView delegate and per-tab navigation state.
 
-use servo::{LoadStatus, NavigationRequest, WebView, WebViewDelegate};
+use servo::{
+    EmbedderControl, EmbedderControlId, LoadStatus, NavigationRequest, SimpleDialog, WebView,
+    WebViewDelegate,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, warn};
@@ -13,6 +16,8 @@ pub struct ServoTabState {
     pub pending_favicon: Option<crate::engine::Favicon>,
     pub pending_form_active: Option<bool>,
     pub pending_downloads: Vec<(String, Option<String>)>,
+    pub pending_dialog: Option<(u64, EmbedderControlId, SimpleDialog)>,
+    pub hide_control_id: Option<EmbedderControlId>,
     pub crashed: bool,
 }
 
@@ -91,5 +96,25 @@ impl WebViewDelegate for ServoTabDelegate {
             warn!("Denying unsafe navigation scheme: {}", scheme);
             navigation_request.deny();
         }
+    }
+
+    fn show_embedder_control(&self, _webview: WebView, embedder_control: EmbedderControl) {
+        let control_id = embedder_control.id();
+        if let EmbedderControl::SimpleDialog(dialog) = embedder_control {
+            static NEXT_DIALOG_ID: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let id = NEXT_DIALOG_ID.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut state) = self.state.lock() {
+                state.pending_dialog = Some((id, control_id, dialog));
+            }
+            self.needs_paint.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
+        if let Ok(mut state) = self.state.lock() {
+            state.hide_control_id = Some(control_id);
+        }
+        self.needs_paint.store(true, Ordering::SeqCst);
     }
 }

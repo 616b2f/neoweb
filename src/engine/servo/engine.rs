@@ -8,17 +8,17 @@ use super::search::{
     xml_escape_highlighted,
 };
 use crate::engine::{
-    EngineEvent, Favicon, HintItem, LoadStatus, NavigationEntry, RenderFrame, SearchOptions,
-    SearchResult, WebEngine, icons,
+    DialogKind, DialogRequest, DialogResponse, EngineEvent, Favicon, HintItem, LoadStatus,
+    NavigationEntry, RenderFrame, SearchOptions, SearchResult, WebEngine, icons,
 };
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{Options, Tree};
 use scraper::{Html, Selector};
 use servo::{
-    CSSPixel, Code, DeviceIntPoint, DeviceIntRect, InputEvent, JSValue, Key, KeyState,
-    KeyboardEvent, Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseMoveEvent, NamedKey, Scroll, WebView, WebViewBuilder, WebViewPoint, WebViewVector,
-    WheelDelta, WheelEvent, WheelMode,
+    CSSPixel, Code, DeviceIntPoint, DeviceIntRect, EmbedderControlId, InputEvent, JSValue, Key,
+    KeyState, KeyboardEvent, Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent,
+    MouseMoveEvent, NamedKey, Scroll, SimpleDialog, WebView, WebViewBuilder, WebViewPoint,
+    WebViewVector, WheelDelta, WheelEvent, WheelMode,
 };
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,6 +90,7 @@ pub struct ServoEngine {
     active_search: Option<SearchResult>,
     last_search_query: Option<String>,
     last_search_opts: Option<SearchOptions>,
+    active_dialog: Option<(u64, EmbedderControlId, SimpleDialog, DialogRequest)>,
     current_page: Option<ServoWebPage>,
     pending_page: Arc<Mutex<Option<ServoWebPage>>>,
     is_about_page: bool,
@@ -123,6 +124,7 @@ impl ServoEngine {
             active_search: None,
             last_search_query: None,
             last_search_opts: None,
+            active_dialog: None,
             current_page: None,
             pending_page: Arc::new(Mutex::new(None)),
             is_about_page: true,
@@ -1336,6 +1338,39 @@ impl WebEngine for ServoEngine {
         self.active_search.as_ref()
     }
 
+    fn active_dialog(&self) -> Option<&DialogRequest> {
+        self.active_dialog.as_ref().map(|(_, _, _, req)| req)
+    }
+
+    fn handle_dialog_response(&mut self, id: u64, response: DialogResponse) {
+        if let Some((active_id, _, _, _)) = &self.active_dialog
+            && *active_id == id
+        {
+            let (_, _, dialog, _) = self.active_dialog.take().unwrap();
+            match response {
+                DialogResponse::Cancel => {
+                    dialog.dismiss();
+                }
+                DialogResponse::Ok(val) => match dialog {
+                    SimpleDialog::Alert(alert) => alert.confirm(),
+                    SimpleDialog::Confirm(confirm) => confirm.confirm(),
+                    SimpleDialog::Prompt(mut prompt) => {
+                        if let Some(text) = val {
+                            prompt.set_current_value(&text);
+                        }
+                        prompt.confirm();
+                    }
+                },
+            }
+            if self.webview.is_some() {
+                let _ = ServoHost::with(|host| {
+                    host.servo.spin_event_loop();
+                });
+            }
+            self.needs_paint.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn resize(&mut self, width: u32, height: u32) {
         if self.width != width || self.height != height {
             self.width = width.max(100);
@@ -1618,6 +1653,33 @@ impl WebEngine for ServoEngine {
                     url,
                     suggested_filename,
                 });
+            }
+
+            if let Some((id, control_id, dialog)) = state.pending_dialog.take() {
+                let kind = match &dialog {
+                    SimpleDialog::Alert(a) => DialogKind::Alert {
+                        message: a.message().to_string(),
+                    },
+                    SimpleDialog::Confirm(c) => DialogKind::Confirm {
+                        message: c.message().to_string(),
+                    },
+                    SimpleDialog::Prompt(p) => DialogKind::Prompt {
+                        message: p.message().to_string(),
+                        default_value: p.current_value().to_string(),
+                    },
+                };
+                let req = DialogRequest { id, kind };
+                self.active_dialog = Some((id, control_id, dialog, req.clone()));
+                self.events.push(EngineEvent::Dialog(req));
+            }
+
+            if let Some(control_id) = state.hide_control_id.take()
+                && let Some((id, active_cid, _, _)) = &self.active_dialog
+                && *active_cid == control_id
+            {
+                let dismissed_id = *id;
+                self.active_dialog = None;
+                self.events.push(EngineEvent::DialogDismissed(dismissed_id));
             }
 
             if state.crashed {

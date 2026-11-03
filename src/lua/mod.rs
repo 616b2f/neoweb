@@ -265,6 +265,39 @@ impl UserData for LuaWindow {
         );
 
         methods.add_method(
+            "respond_dialog",
+            |_, this, (id, ok, value): (u64, bool, Option<String>)| {
+                let response = if ok {
+                    crate::engine::DialogResponse::Ok(value)
+                } else {
+                    crate::engine::DialogResponse::Cancel
+                };
+                this.sender
+                    .send(LuaToRustMsg::DialogResponse { id, response });
+                Ok(())
+            },
+        );
+
+        methods.add_method(
+            "confirm_dialog",
+            |_, this, (id, value): (u64, Option<String>)| {
+                this.sender.send(LuaToRustMsg::DialogResponse {
+                    id,
+                    response: crate::engine::DialogResponse::Ok(value),
+                });
+                Ok(())
+            },
+        );
+
+        methods.add_method("cancel_dialog", |_, this, id: u64| {
+            this.sender.send(LuaToRustMsg::DialogResponse {
+                id,
+                response: crate::engine::DialogResponse::Cancel,
+            });
+            Ok(())
+        });
+
+        methods.add_method(
             "add_signal",
             |lua, _this, (name, func): (String, Function)| {
                 let lousy: Table = lua.load("require('lousy')").eval()?;
@@ -1111,6 +1144,55 @@ impl LuaRuntime {
             end
         "#;
         let _ = self.lua.load(code).exec();
+    }
+
+    pub fn show_dialog(&self, id: u64, kind: &crate::engine::DialogKind) {
+        let (dtype, message, default_val) = match kind {
+            crate::engine::DialogKind::Alert { message } => ("alert", message.as_str(), ""),
+            crate::engine::DialogKind::Confirm { message } => ("confirm", message.as_str(), ""),
+            crate::engine::DialogKind::Prompt {
+                message,
+                default_value,
+            } => ("prompt", message.as_str(), default_value.as_str()),
+        };
+        let code = r#"
+            local id, dtype, message, default_val = ...
+            local dialog = package.loaded["dialog"] or require("dialog")
+            if dialog and dialog.show then
+                dialog.show(w, id, dtype, message, default_val)
+            end
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            let _ = func.call::<()>((id, dtype, message, default_val));
+        }
+    }
+
+    pub fn dismiss_dialog(&self, id: u64) {
+        let code = r#"
+            local id = ...
+            local dialog = package.loaded["dialog"] or require("dialog")
+            if dialog and dialog.dismiss then
+                dialog.dismiss(w, id)
+            end
+        "#;
+        if let Ok(func) = self.lua.load(code).into_function() {
+            let _ = func.call::<()>(id);
+        }
+    }
+
+    pub fn get_dialog_view(&self) -> Option<crate::ui::lua_view::LuaUiNode> {
+        let code = r#"
+            local dialog = package.loaded["dialog"] or require("dialog")
+            if dialog and dialog.get_view then
+                return dialog.get_view(w)
+            end
+            return nil
+        "#;
+        if let Ok(tbl) = self.lua.load(code).eval::<mlua::Table>() {
+            crate::ui::lua_view::LuaUiNode::from_lua(&tbl)
+        } else {
+            None
+        }
     }
 
     /// Query mandatory tab strip height from Lua without fallback.
@@ -2660,6 +2742,172 @@ mod tests {
             "Badge should display FOLLOW-DL: {}",
             view_str
         );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_lua_dialog_interaction() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = LuaSender::new(tx);
+        let storage = Arc::new(Mutex::new(crate::storage::Storage::in_memory().unwrap()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_lua_dialog_test_{}", std::process::id()));
+        let bm_path = temp_dir.join("Bookmarks");
+        let bookmarks = Arc::new(Mutex::new(crate::bookmarks::BookmarkStore::new(Some(
+            bm_path,
+        ))));
+        let runtime =
+            LuaRuntime::with_config_dir(sender, bookmarks, storage, Some(temp_dir.clone()))
+                .unwrap();
+        runtime.load_init_script();
+
+        // Drain startup messages
+        while rx.try_recv().is_ok() {}
+
+        // 1. Test Alert dialog
+        assert!(runtime.get_dialog_view().is_none());
+        runtime.show_dialog(
+            1,
+            &crate::engine::DialogKind::Alert {
+                message: "Disk space low".to_string(),
+            },
+        );
+        assert_eq!(runtime.get_mode(), "dialog");
+        assert!(runtime.get_dialog_view().is_some());
+
+        // Press <CR> to acknowledge alert
+        assert!(runtime.handle_key("<CR>"));
+        assert_eq!(runtime.get_mode(), "normal");
+        assert!(runtime.get_dialog_view().is_none());
+
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::SetMode(m) => assert_eq!(m, "dialog"),
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::DialogResponse { id, response } => {
+                assert_eq!(id, 1);
+                assert_eq!(response, crate::engine::DialogResponse::Ok(None));
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::SetMode(m) => assert_eq!(m, "normal"),
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+
+        // 2. Test Confirm dialog with 'y' key
+        runtime.show_dialog(
+            2,
+            &crate::engine::DialogKind::Confirm {
+                message: "Save changes before exit?".to_string(),
+            },
+        );
+        assert_eq!(runtime.get_mode(), "dialog");
+        while let Ok(msg) = rx.try_recv() {
+            if let LuaToRustMsg::SetMode(m) = msg {
+                assert_eq!(m, "dialog");
+            }
+        }
+
+        assert!(runtime.handle_key("y"));
+        assert_eq!(runtime.get_mode(), "normal");
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::DialogResponse { id, response } => {
+                assert_eq!(id, 2);
+                assert_eq!(response, crate::engine::DialogResponse::Ok(None));
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        while rx.try_recv().is_ok() {}
+
+        // 3. Test Confirm dialog with 'n' key
+        runtime.show_dialog(
+            3,
+            &crate::engine::DialogKind::Confirm {
+                message: "Format hard drive?".to_string(),
+            },
+        );
+        assert_eq!(runtime.get_mode(), "dialog");
+        while rx.try_recv().is_ok() {}
+
+        assert!(runtime.handle_key("n"));
+        assert_eq!(runtime.get_mode(), "normal");
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::DialogResponse { id, response } => {
+                assert_eq!(id, 3);
+                assert_eq!(response, crate::engine::DialogResponse::Cancel);
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        while rx.try_recv().is_ok() {}
+
+        // 4. Test Prompt dialog with text entry and <CR>
+        runtime.show_dialog(
+            4,
+            &crate::engine::DialogKind::Prompt {
+                message: "Enter username:".to_string(),
+                default_value: "alice".to_string(),
+            },
+        );
+        assert_eq!(runtime.get_mode(), "dialog");
+        while rx.try_recv().is_ok() {}
+
+        // Type extra characters: " _123"
+        assert!(runtime.handle_key("<Space>"));
+        assert!(runtime.handle_key("_"));
+        assert!(runtime.handle_key("1"));
+        assert!(runtime.handle_key("2"));
+        assert!(runtime.handle_key("3"));
+        assert!(runtime.handle_key("<CR>"));
+        assert_eq!(runtime.get_mode(), "normal");
+
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::DialogResponse { id, response } => {
+                assert_eq!(id, 4);
+                assert_eq!(
+                    response,
+                    crate::engine::DialogResponse::Ok(Some("alice _123".to_string()))
+                );
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        while rx.try_recv().is_ok() {}
+
+        // 5. Test Prompt dialog cancelled with <Esc>
+        runtime.show_dialog(
+            5,
+            &crate::engine::DialogKind::Prompt {
+                message: "Enter token:".to_string(),
+                default_value: "secret".to_string(),
+            },
+        );
+        assert_eq!(runtime.get_mode(), "dialog");
+        while rx.try_recv().is_ok() {}
+
+        assert!(runtime.handle_key("<Esc>"));
+        assert_eq!(runtime.get_mode(), "normal");
+        match rx.try_recv().unwrap() {
+            LuaToRustMsg::DialogResponse { id, response } => {
+                assert_eq!(id, 5);
+                assert_eq!(response, crate::engine::DialogResponse::Cancel);
+            }
+            other => panic!("Unexpected msg: {:?}", other),
+        }
+        while rx.try_recv().is_ok() {}
+
+        // 6. Test dismiss_dialog
+        runtime.show_dialog(
+            6,
+            &crate::engine::DialogKind::Alert {
+                message: "Auto dismiss test".to_string(),
+            },
+        );
+        assert!(runtime.get_dialog_view().is_some());
+        runtime.dismiss_dialog(6);
+        assert!(runtime.get_dialog_view().is_none());
+        assert_eq!(runtime.get_mode(), "normal");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

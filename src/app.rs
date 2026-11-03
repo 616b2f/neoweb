@@ -311,6 +311,12 @@ impl NeowebApp {
                 } => {
                     crate::download::start_download(url, suggested_filename.map(Into::into));
                 }
+                crate::engine::EngineEvent::Dialog(req) => {
+                    self.lua_runtime.show_dialog(req.id, &req.kind);
+                }
+                crate::engine::EngineEvent::DialogDismissed(id) => {
+                    self.lua_runtime.dismiss_dialog(id);
+                }
             }
         }
 
@@ -498,6 +504,12 @@ impl NeowebApp {
                 crate::download::start_download(url, path.map(Into::into));
                 Task::none()
             }
+            LuaToRustMsg::DialogResponse { id, response } => {
+                self.tabs
+                    .active_engine_mut()
+                    .handle_dialog_response(id, response);
+                Task::none()
+            }
         }
     }
 
@@ -570,13 +582,18 @@ impl NeowebApp {
                 status_bar
             };
 
-        // 5. Notifications: positioned above status/bottom bar, shown only when active
+        // 5. Notifications & Dialogs: positioned above status/bottom bar
         let notification_view = self.lua_runtime.get_notification_view();
+        let dialog_view = self.lua_runtime.get_dialog_view();
 
         let mut layout = column![tab_strip, viewport];
 
         if let Some(notif_node) = notification_view {
             layout = layout.push(render_lua_node(&notif_node, Message::LuaUiCallback));
+        }
+
+        if let Some(dialog_node) = dialog_view {
+            layout = layout.push(render_lua_node(&dialog_node, Message::LuaUiCallback));
         }
 
         layout = layout.push(bottom_bar);

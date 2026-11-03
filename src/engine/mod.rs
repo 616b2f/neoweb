@@ -71,6 +71,32 @@ pub struct SearchResult {
     pub total_matches: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogKind {
+    Alert {
+        message: String,
+    },
+    Confirm {
+        message: String,
+    },
+    Prompt {
+        message: String,
+        default_value: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogRequest {
+    pub id: u64,
+    pub kind: DialogKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogResponse {
+    Ok(Option<String>),
+    Cancel,
+}
+
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     TitleChanged(String),
@@ -85,6 +111,8 @@ pub enum EngineEvent {
         url: String,
         suggested_filename: Option<String>,
     },
+    Dialog(DialogRequest),
+    DialogDismissed(u64),
 }
 
 pub trait WebEngine {
@@ -130,6 +158,11 @@ pub trait WebEngine {
     fn active_search(&self) -> Option<&SearchResult> {
         None
     }
+
+    fn active_dialog(&self) -> Option<&DialogRequest> {
+        None
+    }
+    fn handle_dialog_response(&mut self, _id: u64, _response: DialogResponse) {}
 
     fn resize(&mut self, _width: u32, _height: u32) {}
     fn viewport_size(&self) -> (u32, u32) {

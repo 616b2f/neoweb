@@ -35,6 +35,10 @@ pub enum LuaToRustMsg {
         url: String,
         path: Option<String>,
     },
+    DialogResponse {
+        id: u64,
+        response: crate::engine::DialogResponse,
+    },
 }
 
 #[derive(Clone)]

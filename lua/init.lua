@@ -13,8 +13,10 @@ local window = require("window")
 window.init(_G.w)
 local session = require("session")
 local downloads = require("downloads")
+local dialog = require("dialog")
 if luakit then
     luakit.downloads = downloads
+    luakit.dialog = dialog
 end
 
 -- Luakit Application Lifecycle Management
