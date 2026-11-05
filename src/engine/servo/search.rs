@@ -456,3 +456,121 @@ pub fn collect_builtin_page_matches(
     }
     match_positions
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_substring_ranges_ascii() {
+        let text = "Hello World, hello Neoweb";
+        // Case-insensitive: matches both "Hello" and "hello"
+        let ranges = find_substring_ranges(text, "hello", false);
+        assert_eq!(ranges, vec![(0, 5), (13, 18)]);
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "Hello");
+        assert_eq!(&text[ranges[1].0..ranges[1].1], "hello");
+
+        // Case-sensitive: matches only "hello"
+        let sensitive_ranges = find_substring_ranges(text, "hello", true);
+        assert_eq!(sensitive_ranges, vec![(13, 18)]);
+    }
+
+    #[test]
+    fn test_find_substring_ranges_unicode() {
+        // Multi-byte UTF-8: Crab emoji 🦀 is 4 bytes
+        let text = "🦀 Rust is fast! 🦀";
+        let ranges = find_substring_ranges(text, "🦀", false);
+        assert_eq!(ranges, vec![(0, 4), (19, 23)]);
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "🦀");
+        assert_eq!(&text[ranges[1].0..ranges[1].1], "🦀");
+
+        // Cyrillic: each char is 2 bytes
+        let cyrillic_text = "Привет мир, привет!";
+        let c_ranges = find_substring_ranges(cyrillic_text, "привет", false);
+        assert_eq!(c_ranges, vec![(0, 12), (21, 33)]);
+        assert_eq!(&cyrillic_text[c_ranges[0].0..c_ranges[0].1], "Привет");
+        assert_eq!(&cyrillic_text[c_ranges[1].0..c_ranges[1].1], "привет");
+
+        // German Umlauts
+        let german_text = "Äpfel und Über";
+        let g_ranges = find_substring_ranges(german_text, "äpfel", false);
+        assert_eq!(g_ranges, vec![(0, 6)]);
+        assert_eq!(&german_text[g_ranges[0].0..g_ranges[0].1], "Äpfel");
+    }
+
+    #[test]
+    fn test_find_substring_ranges_empty_and_overlapping() {
+        let text = "aaaa";
+        // Empty query must return empty without infinite loop
+        assert!(find_substring_ranges(text, "", false).is_empty());
+        assert!(find_substring_ranges("", "test", false).is_empty());
+
+        // Overlapping patterns advance past matched substring
+        let ranges = find_substring_ranges(text, "aa", false);
+        assert_eq!(ranges, vec![(0, 2), (2, 4)]);
+
+        // Non-matching query
+        assert!(find_substring_ranges(text, "b", false).is_empty());
+    }
+
+    #[test]
+    fn test_xml_escape_highlighted_active_and_inactive() {
+        let text = "R&D <Code> & \"Rust\"";
+        // No search active: plain XML escape
+        assert_eq!(
+            xml_escape_highlighted(text, None, false, &mut 0),
+            "R&amp;D &lt;Code&gt; &amp; &quot;Rust&quot;"
+        );
+
+        // Search active: query "Rust", total 1, current 1 -> active color #ff9e64
+        let sr = SearchResult {
+            query: "Rust".to_string(),
+            current_match: 1,
+            total_matches: 1,
+        };
+        let mut counter = 0;
+        let highlighted = xml_escape_highlighted(text, Some(&sr), false, &mut counter);
+        assert!(highlighted.contains(r##"<tspan fill="#ff9e64" font-weight="bold">Rust</tspan>"##));
+        assert!(highlighted.contains("R&amp;D"));
+
+        // Search active with 2 matches: 1st inactive (#e0af68), 2nd active (#ff9e64)
+        let multi_text = "Rust and more Rust!";
+        let multi_sr = SearchResult {
+            query: "Rust".to_string(),
+            current_match: 2,
+            total_matches: 2,
+        };
+        let mut multi_counter = 0;
+        let multi_hl =
+            xml_escape_highlighted(multi_text, Some(&multi_sr), false, &mut multi_counter);
+        assert_eq!(multi_counter, 2);
+        assert!(multi_hl.contains(r##"<tspan fill="#e0af68" font-weight="bold">Rust</tspan>"##));
+        assert!(multi_hl.contains(r##"<tspan fill="#ff9e64" font-weight="bold">Rust</tspan>"##));
+    }
+
+    #[test]
+    fn test_collect_builtin_page_matches() {
+        // about:help matches
+        let help_matches = collect_builtin_page_matches("about:help", None, "Scroll", false);
+        assert!(
+            !help_matches.is_empty(),
+            "about:help should have matches for 'Scroll'"
+        );
+
+        // about:neoweb matches
+        let neoweb_matches = collect_builtin_page_matches("about:neoweb", None, "Servo", false);
+        assert!(
+            !neoweb_matches.is_empty(),
+            "about:neoweb should have matches for 'Servo'"
+        );
+
+        // about:blank matches
+        let blank_matches = collect_builtin_page_matches("about:blank", None, "blank", false);
+        assert_eq!(blank_matches.len(), 1);
+
+        // Non-matching query
+        let no_matches =
+            collect_builtin_page_matches("about:help", None, "nonexistentquery123", false);
+        assert!(no_matches.is_empty());
+    }
+}

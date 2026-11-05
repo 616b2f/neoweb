@@ -1256,4 +1256,114 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_app_tab_navigation_messages() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_test_app_tabs_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
+
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs.active_index(), 0);
+
+        // 1. Open new tab with about:blank
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::NewTab("about:blank".to_string()));
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.active_index(), 1);
+        assert_eq!(app.tabs.active_tab().title(), "Blank Page");
+
+        // 2. Open new tab with about:help
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::NewTab("about:help".to_string()));
+        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.tabs.active_index(), 2);
+        assert_eq!(app.tabs.active_tab().title(), "Neoweb Help & Keybindings");
+
+        // 3. PrevTab / NextTab
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::PrevTab);
+        assert_eq!(app.tabs.active_index(), 1);
+
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::NextTab);
+        assert_eq!(app.tabs.active_index(), 2);
+
+        // 4. GotoTab(0)
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::GotoTab(0));
+        assert_eq!(app.tabs.active_index(), 0);
+
+        // 5. CloseTab(Some(1)) -> closes index 1
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::CloseTab(Some(1)));
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.active_index(), 0);
+
+        // 6. CloseTab(None) -> closes active tab
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::CloseTab(None));
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs.active_index(), 0);
+
+        // View renders cleanly
+        let _ = app.view();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_app_download_event_lifecycle() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_test_app_dl_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
+
+        // 1. Download progress event
+        let _ = app.update(Message::Download(
+            crate::download::DownloadEvent::Progress {
+                id: 1,
+                downloaded: 512,
+                total: Some(1024),
+            },
+        ));
+
+        // 2. Download finished event
+        let _ = app.update(Message::Download(
+            crate::download::DownloadEvent::Finished {
+                id: 1,
+                filename: "release.tar.gz".to_string(),
+                path: std::path::PathBuf::from("/tmp/release.tar.gz"),
+                size: 1024,
+            },
+        ));
+
+        // 3. Download failed event triggers error notification
+        let _ = app.update(Message::Download(crate::download::DownloadEvent::Failed {
+            id: 2,
+            filename: "missing.iso".to_string(),
+            error: "Network unreachable".to_string(),
+        }));
+
+        let notif = app.lua_runtime.get_notification_view();
+        assert!(
+            notif.is_some(),
+            "Download failure must trigger error notification"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_app_dialog_event_lifecycle() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("neoweb_test_app_dialog_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let (mut app, _task) = NeowebApp::with_config_dir(Some(temp_dir.clone()));
+
+        // 1. Deliver DialogResponse through update
+        let _ = app.handle_lua_msg(crate::lua::LuaToRustMsg::DialogResponse {
+            id: 99,
+            response: crate::engine::DialogResponse::Cancel,
+        });
+
+        // 2. View renders safely with or without active dialog
+        let _ = app.view();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

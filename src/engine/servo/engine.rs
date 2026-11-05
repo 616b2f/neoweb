@@ -181,6 +181,13 @@ impl ServoEngine {
             || trimmed.contains("://")
         {
             trimmed.to_string()
+        } else if trimmed == "localhost"
+            || trimmed.starts_with("localhost:")
+            || trimmed.starts_with("localhost/")
+            || trimmed.starts_with("127.0.0.1")
+            || trimmed.starts_with("[::1]")
+        {
+            format!("http://{}", trimmed)
         } else if trimmed.find('.').is_some() && !trimmed.contains(' ') {
             format!("https://{}", trimmed)
         } else {

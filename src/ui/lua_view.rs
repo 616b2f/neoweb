@@ -611,3 +611,180 @@ pub fn render_lua_node<Message: Clone + 'static>(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TestMsg {
+        Clicked(usize),
+    }
+
+    #[test]
+    fn test_render_lua_node_text_variants() {
+        let colors = [
+            "primary",
+            "muted",
+            "yellow",
+            "red",
+            "blue",
+            "green",
+            "magenta",
+            "orange",
+            "cyan",
+            "white",
+            "#1a1b26",
+            "#e0af68",
+            "unknown_color",
+        ];
+        let wraps = [None, Some("none"), Some("word"), Some("glyph")];
+        let aligns = [
+            None,
+            Some("center"),
+            Some("start"),
+            Some("end"),
+            Some("right"),
+        ];
+
+        for color in colors {
+            for wrap in &wraps {
+                for align in &aligns {
+                    let node = LuaUiNode::Text {
+                        content: "Test Label".to_string(),
+                        size: 13,
+                        color: color.to_string(),
+                        width: Some(Length::Fill),
+                        height: Some(Length::Fixed(20.0)),
+                        wrapping: wrap.map(|s| s.to_string()),
+                        align: align.map(|s| s.to_string()),
+                    };
+                    let _elem: Element<'_, TestMsg> = render_lua_node(&node, TestMsg::Clicked);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_lua_node_space() {
+        let node = LuaUiNode::Space {
+            width: Some(Length::Fixed(10.0)),
+            height: Some(Length::Fill),
+        };
+        let _elem: Element<'_, TestMsg> = render_lua_node(&node, TestMsg::Clicked);
+    }
+
+    #[test]
+    fn test_render_lua_node_containers_row_column() {
+        let child = LuaUiNode::Text {
+            content: "Inner".to_string(),
+            size: 12,
+            color: "primary".to_string(),
+            width: None,
+            height: None,
+            wrapping: None,
+            align: None,
+        };
+
+        let row = LuaUiNode::Row {
+            children: vec![child.clone()],
+            spacing: 4.0,
+            align: "center".to_string(),
+            width: Some(Length::Fill),
+            height: Some(Length::Fixed(28.0)),
+        };
+        let _elem_row: Element<'_, TestMsg> = render_lua_node(&row, TestMsg::Clicked);
+
+        let col = LuaUiNode::Column {
+            children: vec![child.clone()],
+            spacing: 2.0,
+            align: "start".to_string(),
+            width: Some(Length::Shrink),
+            height: None,
+        };
+        let _elem_col: Element<'_, TestMsg> = render_lua_node(&col, TestMsg::Clicked);
+
+        let styles = [
+            "dark",
+            "surface",
+            "prompt_bar",
+            "status_bar",
+            "active",
+            "item_selected",
+            "item_normal",
+            "none",
+            "unknown_style",
+        ];
+        for style in styles {
+            let container_node = LuaUiNode::Container {
+                child: Box::new(child.clone()),
+                padding: Some((4.0, 8.0)),
+                width: Some(Length::Fill),
+                height: Some(Length::Fixed(28.0)),
+                style: style.to_string(),
+            };
+            let _elem_cont: Element<'_, TestMsg> =
+                render_lua_node(&container_node, TestMsg::Clicked);
+        }
+    }
+
+    #[test]
+    fn test_render_lua_node_buttons() {
+        let child = LuaUiNode::Text {
+            content: "×".to_string(),
+            size: 13,
+            color: "primary".to_string(),
+            width: None,
+            height: None,
+            wrapping: None,
+            align: Some("center".to_string()),
+        };
+
+        // Close button: style == "close_btn", centered alignment
+        let close_btn = LuaUiNode::Button {
+            child: Box::new(child.clone()),
+            padding: (0.0, 0.0),
+            width: Some(Length::Fixed(16.0)),
+            height: Some(Length::Fixed(16.0)),
+            style: "close_btn".to_string(),
+            callback_id: Some(42),
+        };
+        let _elem_close: Element<'_, TestMsg> = render_lua_node(&close_btn, TestMsg::Clicked);
+
+        // Tab button: style == "tab_active", left-aligned inner container
+        let tab_btn = LuaUiNode::Button {
+            child: Box::new(child.clone()),
+            padding: (2.0, 6.0),
+            width: Some(Length::Fill),
+            height: Some(Length::Fixed(28.0)),
+            style: "tab_active".to_string(),
+            callback_id: None,
+        };
+        let _elem_tab: Element<'_, TestMsg> = render_lua_node(&tab_btn, TestMsg::Clicked);
+    }
+
+    #[test]
+    fn test_render_lua_node_spinner_and_image() {
+        let spinner = LuaUiNode::Spinner {
+            width: Some(Length::Fixed(16.0)),
+            height: Some(Length::Fixed(16.0)),
+            circle_radius: Some(1.5),
+        };
+        let _elem_spin: Element<'_, TestMsg> = render_lua_node(&spinner, TestMsg::Clicked);
+
+        // 1x1 transparent PNG
+        let png_bytes = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let handle = get_or_create_image_handle(&png_bytes);
+        let img = LuaUiNode::Image {
+            handle,
+            width: Some(Length::Fixed(16.0)),
+            height: Some(Length::Fixed(16.0)),
+        };
+        let _elem_img: Element<'_, TestMsg> = render_lua_node(&img, TestMsg::Clicked);
+    }
+}

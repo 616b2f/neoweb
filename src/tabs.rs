@@ -1,4 +1,4 @@
-use crate::engine::{servo::ServoEngine, WebEngine};
+use crate::engine::{WebEngine, servo::ServoEngine};
 
 pub struct Tab {
     pub id: usize,
@@ -103,7 +103,9 @@ impl TabManager {
         if index < self.tabs.len() {
             self.tabs[index].engine.deactivate();
             self.tabs.remove(index);
-            if self.active_index >= self.tabs.len() {
+            if index < self.active_index {
+                self.active_index -= 1;
+            } else if self.active_index >= self.tabs.len() {
                 self.active_index = self.tabs.len() - 1;
             }
             self.tabs[self.active_index].engine.activate();
@@ -206,5 +208,77 @@ mod tests {
         assert_eq!(mgr.len(), 0);
         assert!(mgr.is_empty());
         assert_eq!(mgr.active_index(), 0);
+    }
+
+    #[test]
+    fn test_tab_manager_close_earlier_tab_preserves_active_tab_focus() {
+        // Create 4 tabs: [Tab0: neoweb, Tab1: blank, Tab2: help, Tab3: blank]
+        let mut mgr = TabManager::new("about:neoweb");
+        mgr.new_tab("about:blank");
+        mgr.new_tab("about:help");
+        mgr.new_tab("about:blank");
+        assert_eq!(mgr.len(), 4);
+
+        // Focus Tab2 ("about:help")
+        mgr.goto_tab(2);
+        assert_eq!(mgr.active_index(), 2);
+        assert_eq!(mgr.active_tab().title(), "Neoweb Help & Keybindings");
+
+        // Close Tab 0 (an earlier tab)
+        assert!(mgr.close_tab(0));
+        assert_eq!(mgr.len(), 3);
+        // Active index must be adjusted from 2 to 1, still pointing to Tab2 ("about:help")!
+        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_tab().title(), "Neoweb Help & Keybindings");
+    }
+
+    #[test]
+    fn test_tab_manager_close_active_tab_shifts_to_valid_tab() {
+        // Create 3 tabs, activate the last tab (index 2)
+        let mut mgr = TabManager::new("about:neoweb");
+        mgr.new_tab("about:blank");
+        mgr.new_tab("about:help");
+        assert_eq!(mgr.active_index(), 2);
+        assert_eq!(mgr.active_tab().title(), "Neoweb Help & Keybindings");
+
+        // Close the active tab (index 2)
+        assert!(mgr.close_active_tab());
+        assert_eq!(mgr.len(), 2);
+        // Should fall back to index 1 ("about:blank")
+        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_tab().title(), "Blank Page");
+    }
+
+    #[test]
+    fn test_tab_manager_close_middle_active_tab() {
+        let mut mgr = TabManager::new("about:neoweb");
+        mgr.new_tab("about:blank");
+        mgr.new_tab("about:help");
+        mgr.goto_tab(1);
+        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_tab().title(), "Blank Page");
+
+        // Close middle tab (index 1)
+        assert!(mgr.close_tab(1));
+        assert_eq!(mgr.len(), 2);
+        // Index 1 now holds "about:help"
+        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_tab().title(), "Neoweb Help & Keybindings");
+    }
+
+    #[test]
+    fn test_tab_manager_close_later_tab_preserves_active_tab() {
+        let mut mgr = TabManager::new("about:neoweb");
+        mgr.new_tab("about:blank");
+        mgr.new_tab("about:help");
+        mgr.goto_tab(0);
+        assert_eq!(mgr.active_index(), 0);
+        assert_eq!(mgr.active_tab().title(), "Neoweb - Home");
+
+        // Close a later tab (index 2)
+        assert!(mgr.close_tab(2));
+        assert_eq!(mgr.len(), 2);
+        assert_eq!(mgr.active_index(), 0);
+        assert_eq!(mgr.active_tab().title(), "Neoweb - Home");
     }
 }

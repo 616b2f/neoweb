@@ -1,6 +1,6 @@
 pub mod bridge;
 
-use bridge::{LuaSender, LuaToRustMsg};
+pub use bridge::{LuaSender, LuaToRustMsg};
 use mlua::{Function, Lua, Table, UserData, UserDataMethods};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1614,6 +1614,21 @@ mod tests {
             }
             other => panic!("Unexpected msg: {:?}", other),
         }
+
+        // Test lousy.uri.parse localhost handling
+        let uri_test: String = runtime
+            .lua
+            .load(r#"require("lousy.uri").parse("localhost:3000")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(uri_test, "http://localhost:3000");
+
+        let uri_test2: String = runtime
+            .lua
+            .load(r#"require("lousy.uri").parse("127.0.0.1:8080")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(uri_test2, "http://127.0.0.1:8080");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

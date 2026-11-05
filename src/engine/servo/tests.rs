@@ -39,6 +39,23 @@ fn test_servo_engine_url_normalization() {
         "https://github.com"
     );
     assert_eq!(ServoEngine::normalize_url("about:help"), "about:help");
+    assert_eq!(ServoEngine::normalize_url("localhost"), "http://localhost");
+    assert_eq!(
+        ServoEngine::normalize_url("localhost:3000"),
+        "http://localhost:3000"
+    );
+    assert_eq!(
+        ServoEngine::normalize_url("localhost:8080/api"),
+        "http://localhost:8080/api"
+    );
+    assert_eq!(
+        ServoEngine::normalize_url("127.0.0.1:5000"),
+        "http://127.0.0.1:5000"
+    );
+    assert_eq!(
+        ServoEngine::normalize_url("[::1]:8000"),
+        "http://[::1]:8000"
+    );
 }
 
 #[test]

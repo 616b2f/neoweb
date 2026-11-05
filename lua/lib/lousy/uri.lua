@@ -27,6 +27,14 @@ function _M.parse(input)
         return string.format(_M.search_engines[prefix], encoded)
     end
 
+    -- Check local development hosts (localhost, 127.0.0.1, [::1])
+    if input == "localhost" or input:match("^localhost[:/]")
+        or input:match("^127%.0%.0%.1")
+        or input:match("^%[%:%:1%]")
+    then
+        return "http://" .. input
+    end
+
     -- Check if it looks like a domain name
     if input:find("%.") and not input:find("%s") then
         return "https://" .. input
