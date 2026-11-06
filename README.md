@@ -2,6 +2,8 @@
 
 > A lightweight, keyboard-driven, modal web browser inspired by [Luakit](https://github.com/luakit/luakit), built in Rust using the [Servo](https://servo.org/) browser engine and the [Iced](https://iced.rs/) GUI toolkit, fully scriptable and configurable via LuaJIT.
 
+![preview](./docs/neoweb-preview.png)
+
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://www.rust-lang.org/)
 [![Servo Engine](https://img.shields.io/badge/engine-Servo_0.7.0-blue.svg)](https://servo.org/)
 [![GUI Framework](https://img.shields.io/badge/gui-Iced_0.14-teal.svg)](https://iced.rs/)
