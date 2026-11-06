@@ -96,7 +96,7 @@ pub struct ServoEngine {
     is_about_page: bool,
     webview: Option<WebView>,
     needs_paint: Arc<AtomicBool>,
-    tab_state: Arc<Mutex<ServoTabState>>,
+    pub(crate) tab_state: Arc<Mutex<ServoTabState>>,
 }
 
 impl ServoEngine {
@@ -539,6 +539,116 @@ impl ServoEngine {
         }
     }
 
+    /// Extracts favicon URL from the page DOM via SpiderMonkey evaluate_javascript
+    /// and asynchronously downloads/normalizes it into a 16x16 PNG Favicon.
+    fn extract_favicon_from_dom(&self) {
+        if self.is_about_page || self.webview.is_none() {
+            return;
+        }
+        let Some(wv) = &self.webview else { return };
+        let tab_state_clone = self.tab_state.clone();
+        let needs_paint_clone = self.needs_paint.clone();
+        let page_url = self.uri.clone();
+        let target_gen = self
+            .tab_state
+            .lock()
+            .map(|st| st.favicon_generation)
+            .unwrap_or(0);
+        let current_favicon_uri = self.favicon.as_ref().and_then(|f| f.uri.clone());
+
+        const FAVICON_QUERY_SCRIPT: &str = r#"(function() {
+            var selectors = [
+                'link[rel="icon"][type*="svg"]',
+                'link[rel~="icon"][type*="svg"]',
+                'link[rel="shortcut icon"]',
+                'link[rel="icon"]',
+                'link[rel~="icon"]',
+                'link[rel~="apple-touch-icon"]',
+                'link[rel="apple-touch-icon-precomposed"]'
+            ];
+            for (var i = 0; i < selectors.length; i++) {
+                var el = document.querySelector(selectors[i]);
+                if (el) {
+                    var href = el.href || el.getAttribute('href');
+                    if (href) return href;
+                }
+            }
+            return "";
+        })()"#;
+
+        wv.evaluate_javascript(FAVICON_QUERY_SCRIPT, move |res| {
+            let icon_raw = match res {
+                Ok(JSValue::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+                _ => return,
+            };
+
+            // Avoid re-fetching if we already loaded this exact favicon URI
+            if current_favicon_uri.as_deref() == Some(&icon_raw) {
+                return;
+            }
+
+            // Resolve relative URLs if needed
+            let abs_url = if icon_raw.starts_with("http://")
+                || icon_raw.starts_with("https://")
+                || icon_raw.starts_with("data:")
+            {
+                icon_raw
+            } else if let Ok(base) = url::Url::parse(&page_url) {
+                base.join(&icon_raw)
+                    .map(|u| u.to_string())
+                    .unwrap_or(icon_raw)
+            } else {
+                icon_raw
+            };
+
+            // 1. Handle data: URI
+            if abs_url.starts_with("data:") {
+                if let Some(png) = icons::parse_data_uri(&abs_url)
+                    && let Ok(mut st) = tab_state_clone.lock()
+                    && st.favicon_generation == target_gen
+                {
+                    st.pending_favicon = Some(Favicon {
+                        glyph: "🌐".to_string(),
+                        bytes: Some(png),
+                        uri: Some(abs_url),
+                        is_custom: true,
+                    });
+                    st.has_custom_favicon = true;
+                    needs_paint_clone.store(true, Ordering::SeqCst);
+                }
+                return;
+            }
+
+            // 2. Handle HTTP/HTTPS URL
+            if (abs_url.starts_with("http://") || abs_url.starts_with("https://"))
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                handle.spawn(async move {
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(5))
+                        .build();
+                    if let Ok(c) = client
+                        && let Ok(resp) = c.get(&abs_url).send().await
+                        && resp.status().is_success()
+                        && let Ok(bytes) = resp.bytes().await
+                        && let Some(png) = icons::process_favicon_bytes(&bytes)
+                        && let Ok(mut st) = tab_state_clone.lock()
+                        && st.favicon_generation == target_gen
+                    {
+                        st.pending_favicon = Some(Favicon {
+                            glyph: "🌐".to_string(),
+                            bytes: Some(png),
+                            uri: Some(abs_url),
+                            is_custom: true,
+                        });
+                        st.has_custom_favicon = true;
+                        needs_paint_clone.store(true, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+    }
+
     /// Asynchronously fetches and parses live web pages via HTTP stack
     fn fetch_web_page_async(&self, target_uri: String) {
         let pending = self.pending_page.clone();
@@ -560,70 +670,158 @@ impl ServoEngine {
                     let final_url = resp.url().to_string();
                     match resp.text().await {
                         Ok(html_text) => {
-                            let document = Html::parse_document(&html_text);
+                            let (title, headings, body_text, links, icon_urls) = {
+                                let document = Html::parse_document(&html_text);
 
-                            // 1. Extract title
-                            let title_sel = Selector::parse("title").unwrap();
-                            let title = document
-                                .select(&title_sel)
-                                .next()
-                                .map(|el| el.text().collect::<String>().trim().to_string())
-                                .filter(|t| !t.is_empty())
-                                .unwrap_or_else(|| final_url.clone());
+                                // 1. Extract title
+                                let title_sel = Selector::parse("title").unwrap();
+                                let title = document
+                                    .select(&title_sel)
+                                    .next()
+                                    .map(|el| el.text().collect::<String>().trim().to_string())
+                                    .filter(|t| !t.is_empty())
+                                    .unwrap_or_else(|| final_url.clone());
 
-                            // 2. Extract Headings
-                            let mut headings = Vec::new();
-                            if let Ok(h_sel) = Selector::parse("h1, h2, h3") {
-                                for el in document.select(&h_sel).take(8) {
-                                    let text = el.text().collect::<String>().trim().to_string();
-                                    if !text.is_empty() && text.len() > 2 {
-                                        headings.push(text);
-                                    }
-                                }
-                            }
-
-                            // 3. Extract Paragraphs
-                            let mut body_text = Vec::new();
-                            if let Ok(p_sel) = Selector::parse("p, li") {
-                                for el in document.select(&p_sel).take(12) {
-                                    let text = el.text().collect::<String>().trim().to_string();
-                                    if !text.is_empty() && text.len() > 10 {
-                                        body_text.push(text);
-                                    }
-                                }
-                            }
-
-                            // 4. Extract Links
-                            let mut links = Vec::new();
-                            if let Ok(a_sel) = Selector::parse("a[href]") {
-                                for el in document.select(&a_sel) {
-                                    if let Some(href) = el.value().attr("href") {
+                                // 2. Extract Headings
+                                let mut headings = Vec::new();
+                                if let Ok(h_sel) = Selector::parse("h1, h2, h3") {
+                                    for el in document.select(&h_sel).take(8) {
                                         let text = el.text().collect::<String>().trim().to_string();
-                                        let abs_url = if href.starts_with("http://")
-                                            || href.starts_with("https://")
-                                        {
-                                            href.to_string()
-                                        } else if let Ok(base) = url::Url::parse(&final_url) {
-                                            base.join(href)
-                                                .map(|u| u.to_string())
-                                                .unwrap_or_else(|_| href.to_string())
-                                        } else {
-                                            href.to_string()
-                                        };
-
-                                        if !abs_url.starts_with("javascript:")
-                                            && !abs_url.starts_with('#')
-                                        {
-                                            links.push((text, abs_url));
+                                        if !text.is_empty() && text.len() > 2 {
+                                            headings.push(text);
                                         }
                                     }
+                                }
+
+                                // 3. Extract Paragraphs
+                                let mut body_text = Vec::new();
+                                if let Ok(p_sel) = Selector::parse("p, li") {
+                                    for el in document.select(&p_sel).take(12) {
+                                        let text = el.text().collect::<String>().trim().to_string();
+                                        if !text.is_empty() && text.len() > 10 {
+                                            body_text.push(text);
+                                        }
+                                    }
+                                }
+
+                                // 4. Extract Links
+                                let mut links = Vec::new();
+                                if let Ok(a_sel) = Selector::parse("a[href]") {
+                                    for el in document.select(&a_sel) {
+                                        if let Some(href) = el.value().attr("href") {
+                                            let text =
+                                                el.text().collect::<String>().trim().to_string();
+                                            let abs_url = if href.starts_with("http://")
+                                                || href.starts_with("https://")
+                                            {
+                                                href.to_string()
+                                            } else if let Ok(base) = url::Url::parse(&final_url) {
+                                                base.join(href)
+                                                    .map(|u| u.to_string())
+                                                    .unwrap_or_else(|_| href.to_string())
+                                            } else {
+                                                href.to_string()
+                                            };
+
+                                            if !abs_url.starts_with("javascript:")
+                                                && !abs_url.starts_with('#')
+                                            {
+                                                links.push((text, abs_url));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 5. Extract Favicon candidates
+                                let mut icon_urls = Vec::new();
+                                if let Ok(icon_sel) = Selector::parse(
+                                    r#"link[rel="icon"][type*="svg"], link[rel~="icon"][type*="svg"], link[rel="shortcut icon"], link[rel="icon"], link[rel~="icon"], link[rel~="apple-touch-icon"]"#,
+                                ) {
+                                    for el in document.select(&icon_sel) {
+                                        if let Some(href) = el.value().attr("href") {
+                                            let abs_url = if href.starts_with("http://")
+                                                || href.starts_with("https://")
+                                                || href.starts_with("data:")
+                                            {
+                                                href.to_string()
+                                            } else if let Ok(base) = url::Url::parse(&final_url) {
+                                                base.join(href)
+                                                    .map(|u| u.to_string())
+                                                    .unwrap_or_else(|_| href.to_string())
+                                            } else {
+                                                href.to_string()
+                                            };
+                                            icon_urls.push(abs_url);
+                                        }
+                                    }
+                                }
+
+                                (title, headings, body_text, links, icon_urls)
+                            };
+
+                            let mut page_favicon = None;
+                            for abs_url in icon_urls {
+                                if abs_url.starts_with("data:") {
+                                    if let Some(png) = icons::parse_data_uri(&abs_url) {
+                                        page_favicon = Some(Favicon {
+                                            glyph: "🌐".to_string(),
+                                            bytes: Some(png),
+                                            uri: Some(abs_url),
+                                            is_custom: true,
+                                        });
+                                        break;
+                                    }
+                                } else if (abs_url.starts_with("http://")
+                                    || abs_url.starts_with("https://"))
+                                    && let Ok(resp) = client.get(&abs_url).send().await
+                                    && resp.status().is_success()
+                                    && let Ok(bytes) = resp.bytes().await
+                                    && let Some(png) = icons::process_favicon_bytes(&bytes)
+                                {
+                                    page_favicon = Some(Favicon {
+                                        glyph: "🌐".to_string(),
+                                        bytes: Some(png),
+                                        uri: Some(abs_url),
+                                        is_custom: true,
+                                    });
+                                    break;
+                                }
+                            }
+
+                            // If no <link> favicon succeeded, probe /favicon.ico
+                            if page_favicon.is_none()
+                                && let Ok(parsed_base) = url::Url::parse(&final_url)
+                                && let Some(host) = parsed_base.host_str()
+                            {
+                                let port_part = parsed_base
+                                    .port()
+                                    .map(|p| format!(":{}", p))
+                                    .unwrap_or_default();
+                                let ico_url = format!(
+                                    "{}://{}{}/favicon.ico",
+                                    parsed_base.scheme(),
+                                    host,
+                                    port_part
+                                );
+                                if let Ok(resp) = client.get(&ico_url).send().await
+                                    && resp.status().is_success()
+                                    && let Ok(bytes) = resp.bytes().await
+                                    && let Some(png) = icons::process_favicon_bytes(&bytes)
+                                {
+                                    page_favicon = Some(Favicon {
+                                        glyph: "🌐".to_string(),
+                                        bytes: Some(png),
+                                        uri: Some(ico_url),
+                                        is_custom: true,
+                                    });
                                 }
                             }
 
                             let page = ServoWebPage {
                                 uri: final_url,
                                 title,
-                                favicon: Some(icons::default_globe_favicon()),
+                                favicon: page_favicon
+                                    .or_else(|| Some(icons::default_globe_favicon())),
                                 headings,
                                 body_text,
                                 links,
@@ -784,6 +982,15 @@ impl WebEngine for ServoEngine {
         self.title = format!("Loading {}...", hostname);
         self.favicon = Some(icons::default_globe_favicon());
 
+        let current_gen = if let Ok(mut st) = self.tab_state.lock() {
+            st.pending_favicon = None;
+            st.has_custom_favicon = false;
+            st.favicon_generation += 1;
+            st.favicon_generation
+        } else {
+            0
+        };
+
         let entry = NavigationEntry {
             uri: self.uri.clone(),
             title: self.title.clone(),
@@ -835,6 +1042,8 @@ impl WebEngine for ServoEngine {
                             && let Ok(bytes) = resp.bytes().await
                             && let Some(png) = icons::process_favicon_bytes(&bytes)
                             && let Ok(mut st) = tab_state_clone.lock()
+                            && st.favicon_generation == current_gen
+                            && !st.has_custom_favicon
                             && st.pending_favicon.is_none()
                         {
                             st.pending_favicon = Some(Favicon {
@@ -1641,6 +1850,7 @@ impl WebEngine for ServoEngine {
             self.events.push(EngineEvent::ContentUpdated);
         }
 
+        let mut should_extract_favicon = false;
         // Process tab delegate events
         if let Ok(mut state) = self.tab_state.lock() {
             if let Some(fav) = state.pending_favicon.take() {
@@ -1734,7 +1944,15 @@ impl WebEngine for ServoEngine {
                 };
                 self.progress = p;
                 self.events.push(EngineEvent::ProgressChanged(p));
+
+                if matches!(mapped, LoadStatus::Committed | LoadStatus::Finished) {
+                    should_extract_favicon = true;
+                }
             }
+        }
+
+        if should_extract_favicon {
+            self.extract_favicon_from_dom();
         }
 
         // Paint frame if requested by Servo or if completed real web page needs initial frame

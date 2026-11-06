@@ -14,6 +14,8 @@ pub struct ServoTabState {
     pub pending_title: Option<String>,
     pub pending_status: Option<LoadStatus>,
     pub pending_favicon: Option<crate::engine::Favicon>,
+    pub favicon_generation: u64,
+    pub has_custom_favicon: bool,
     pub pending_form_active: Option<bool>,
     pub pending_downloads: Vec<(String, Option<String>)>,
     pub pending_dialog: Option<(u64, EmbedderControlId, SimpleDialog)>,
@@ -54,6 +56,7 @@ impl WebViewDelegate for ServoTabDelegate {
         {
             if let Ok(mut state) = self.state.lock() {
                 state.pending_favicon = Some(fav);
+                state.has_custom_favicon = true;
             }
             self.needs_paint.store(true, Ordering::SeqCst);
         }

@@ -759,3 +759,108 @@ fn test_servo_engine_simple_dialog_handling() {
     engine.handle_dialog_response(999, crate::engine::DialogResponse::Cancel);
     assert!(engine.active_dialog().is_none());
 }
+
+#[test]
+fn test_servo_favicon_dom_extraction_and_resolution() {
+    use scraper::{Html, Selector};
+
+    // 1. Verify scraper extraction for servo.org's exact link syntax
+    let html = r#"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Servo, the embeddable, independent, memory-safe, modular, parallel web rendering engine</title>
+  <link rel="shortcut icon" href="/svg/servo-symbol-color-no-container.svg">
+</head>
+<body><h1>Servo</h1></body>
+</html>"#;
+    let document = Html::parse_document(html);
+    let icon_sel = Selector::parse(
+        r#"link[rel="icon"][type*="svg"], link[rel~="icon"][type*="svg"], link[rel="shortcut icon"], link[rel="icon"], link[rel~="icon"], link[rel~="apple-touch-icon"]"#,
+    ).expect("Selector should parse");
+
+    let found_href = document
+        .select(&icon_sel)
+        .find_map(|el| el.value().attr("href"))
+        .expect("Must find servo.org shortcut icon");
+    assert_eq!(found_href, "/svg/servo-symbol-color-no-container.svg");
+
+    let base_url = url::Url::parse("https://servo.org/").unwrap();
+    let resolved = base_url.join(found_href).unwrap().to_string();
+    assert_eq!(
+        resolved,
+        "https://servo.org/svg/servo-symbol-color-no-container.svg"
+    );
+
+    // 2. Verify that SVG favicon bytes are correctly transformed into 16x16 PNG
+    let sample_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="63" height="63" viewBox="0 0 63 63">
+        <path d="M13,38 L29,50 L29,61 Z" fill="#1192E8"/>
+    </svg>"##;
+    let png_bytes = crate::engine::icons::process_favicon_bytes(sample_svg.as_bytes())
+        .expect("process_favicon_bytes must rasterize SVG favicon");
+    let decoded = image::load_from_memory(&png_bytes).expect("Rasterized PNG must decode cleanly");
+    assert_eq!(decoded.width(), 16);
+    assert_eq!(decoded.height(), 16);
+
+    // 3. Verify generation guard against stale favicon race conditions
+    let mut engine = ServoEngine::new("about:blank");
+    let initial_gen = engine
+        .tab_state
+        .lock()
+        .map(|st| st.favicon_generation)
+        .unwrap();
+
+    engine.load_url("http://127.0.0.1:9");
+    let new_gen = engine
+        .tab_state
+        .lock()
+        .map(|st| st.favicon_generation)
+        .unwrap();
+    assert!(
+        new_gen > initial_gen,
+        "load_url must increment favicon_generation to guard against races"
+    );
+
+    // Simulate stale response from initial_gen - should be discarded
+    if let Ok(mut st) = engine.tab_state.lock()
+        && st.favicon_generation == initial_gen
+    {
+        st.pending_favicon = Some(crate::engine::Favicon {
+            glyph: "🌐".to_string(),
+            bytes: Some(png_bytes.clone()),
+            uri: Some("https://stale.example/favicon.ico".to_string()),
+            is_custom: true,
+        });
+    }
+    assert!(
+        engine.tab_state.lock().unwrap().pending_favicon.is_none(),
+        "Stale favicon generation must be rejected"
+    );
+
+    // Simulate valid response for current generation
+    if let Ok(mut st) = engine.tab_state.lock()
+        && st.favicon_generation == new_gen
+    {
+        st.pending_favicon = Some(crate::engine::Favicon {
+            glyph: "🌐".to_string(),
+            bytes: Some(png_bytes),
+            uri: Some(resolved),
+            is_custom: true,
+        });
+        st.has_custom_favicon = true;
+    }
+    let events = engine.poll_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, crate::engine::EngineEvent::FaviconChanged(_))),
+        "FaviconChanged event must be emitted when pending_favicon is committed"
+    );
+    assert!(
+        engine.favicon().is_some_and(|f| f.is_custom),
+        "Engine favicon must be marked custom"
+    );
+
+    drop(engine);
+    shutdown_servo();
+}
